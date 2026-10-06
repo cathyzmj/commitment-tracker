@@ -1,4 +1,8 @@
-// GET /api/apps — your application tracker from Notion (opening dates, deadlines, apply links).
+// GET  /api/apps — your application tracker from Notion (opening dates, deadlines, apply links,
+//                  Done and the Materials checklist).
+// POST /api/apps  { id, done?, materialsDone? } — tick an application or its materials; writes the
+//                  page in Notion (needs the integration's "Update content" capability). Only pages
+//                  in the configured database can be changed.
 //
 // Reads a Notion database through the official API with a read-only internal integration whose
 // secret is stored as the server secret NOTION_TOKEN (never sent to the browser).
@@ -26,6 +30,7 @@ function value(prop) {
     case 'status': return prop.status ? prop.status.name : null;
     case 'multi_select': return (prop.multi_select || []).map((o) => o.name);
     case 'date': return prop.date ? { start: prop.date.start, end: prop.date.end || null } : null;
+    case 'checkbox': return !!prop.checkbox;
     default: return null;
   }
 }
@@ -51,7 +56,9 @@ export function toApplication(page) {
     status: value(find(p, 'select', ['My Status', 'Status', 'Stage'], /status|stage/i)) || value(find(p, 'status', [], /./)) || '',
     sector: value(find(p, 'select', ['Sector', 'Track'], /sector|track/i)) || '',
     rolling: value(find(p, 'select', ['Rolling'], /rolling/i)) || '',
-    materials: value(find(p, 'multi_select', ['Materials'], /material/i)) || [],
+    materials: value(find(p, 'multi_select', ['Materials'], /^materials?$/i)) || [],
+    materialsDone: value(find(p, 'multi_select', ['Materials done'], /done|complete/i)) || [],
+    done: !!value(find(p, 'checkbox', ['Done'], /done|complete|finished/i)),
     url: value(find(p, 'url', ['URL', 'Apply', 'Link'], /url|link|apply/i)) || '',
     open: day(open), openTime: time(open),
     close: day(close), closeTime: time(close),
@@ -87,8 +94,59 @@ export function databaseId(value) {
   return m ? m[0].toLowerCase() : null;
 }
 
+// Name of the page property matching a type and preferred names/pattern (used for writing).
+function propName(props, type, names, pattern) {
+  for (const n of names) if (props[n] && props[n].type === type) return n;
+  for (const [n, p] of Object.entries(props)) if (p.type === type && pattern.test(n)) return n;
+  return null;
+}
+
+async function notion(fetchImpl, token, path, method = 'GET', body) {
+  const res = await fetchImpl(`https://api.notion.com/v1/${path}`, {
+    method,
+    headers: { authorization: `Bearer ${token}`, 'notion-version': NOTION_VERSION, 'content-type': 'application/json' },
+    body: body ? JSON.stringify(body) : undefined,
+    signal: AbortSignal.timeout(20000),
+  });
+  return { res, body: await res.json().catch(() => ({})) };
+}
+
+async function updateApplication(req, { token, database, fetchImpl }) {
+  let input;
+  try { input = await req.json(); } catch { return json(400, { error: 'Expected JSON.' }); }
+  const id = String((input && input.id) || '').replace(/-/g, '');
+  if (!/^[0-9a-f]{32}$/i.test(id)) return json(400, { error: 'Unknown application.' });
+  const page = await notion(fetchImpl, token, `pages/${id}`);
+  if (page.res.status === 404) return json(404, { error: 'Notion can’t find that application.' });
+  if (!page.res.ok) return json(502, { error: page.body.message || 'Couldn’t reach Notion.' });
+  const parent = String((page.body.parent && page.body.parent.database_id) || '').replace(/-/g, '');
+  if (parent !== database) return json(403, { error: 'That page isn’t in your applications database.' });
+
+  const props = page.body.properties || {};
+  const properties = {};
+  if (typeof input.done === 'boolean') {
+    const n = propName(props, 'checkbox', ['Done'], /done|complete|finished/i);
+    if (!n) return json(400, { error: 'Add a “Done” checkbox to the database in Notion first.' });
+    properties[n] = { checkbox: input.done };
+  }
+  if (Array.isArray(input.materialsDone)) {
+    const n = propName(props, 'multi_select', ['Materials done'], /done|complete/i);
+    if (!n) return json(400, { error: 'Add a “Materials done” field to the database in Notion first.' });
+    const names = [...new Set(input.materialsDone.map((x) => String(x).slice(0, 100)))].slice(0, 25);
+    properties[n] = { multi_select: names.map((name) => ({ name })) };
+  }
+  if (!Object.keys(properties).length) return json(400, { error: 'Nothing to change.' });
+
+  const upd = await notion(fetchImpl, token, `pages/${id}`, 'PATCH', { properties });
+  if (upd.res.status === 403 || upd.body.code === 'restricted_resource') {
+    return json(403, { error: 'Notion didn’t allow the change. In Notion → Integrations → Commitments → Capabilities, turn on “Update content”.' });
+  }
+  if (!upd.res.ok) return json(502, { error: upd.body.message || `Notion returned an error (${upd.res.status}).` });
+  return json(200, { app: toApplication(upd.body) });
+}
+
 export async function handle(req, { syncStore, env, fetchImpl = fetch }) {
-  if (req.method !== 'GET') return json(405, { error: 'Use GET' });
+  if (req.method !== 'GET' && req.method !== 'POST') return json(405, { error: 'Use GET or POST' });
   const key = (req.headers.get('authorization') || '').replace(/^Bearer\s+/i, '').trim();
   if (!KEY_RE.test(key)) return json(401, { error: 'Turn on sync to see your applications.' });
   if (!(await syncStore.getWithMetadata(await syncStorageName(key), { type: 'json' }))) {
@@ -99,6 +157,7 @@ export async function handle(req, { syncStore, env, fetchImpl = fetch }) {
   try {
     const database = databaseId(env.NOTION_APPS_DATABASE);
     if (!database) return json(503, { error: 'Notion isn’t connected yet (see Applications → Set up).', setup: true });
+    if (req.method === 'POST') return await updateApplication(req, { token, database, fetchImpl });
     const pages = await queryNotion({ token, database, fetchImpl });
     const apps = pages.filter((pg) => !pg.archived && !pg.in_trash).map(toApplication);
     return json(200, { fetchedAt: new Date().toISOString(), apps });

@@ -506,6 +506,17 @@ textarea.code { width: 100%; font: 12px/1.4 ui-monospace, Menlo, monospace; min-
   .chip-app.k-next { background: #3a2e17; color: #f3c56b; }
 }
 
+/* Application checklist */
+.achecklist { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; margin-top: 8px; }
+.mchk { display: inline-flex; align-items: center; gap: 5px; border: 1px solid var(--line); background: var(--card); border-radius: 99px; padding: 3px 9px 3px 4px; font-size: 12px; font-weight: 600; color: var(--ink); }
+.mchk .mbox { width: 16px; height: 16px; border-radius: 50%; border: 1.5px solid var(--muted); display: flex; align-items: center; justify-content: center; }
+.mchk.on { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+.mchk.on .mbox { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.mchk .mbox svg { width: 11px; height: 11px; }
+.mprog { font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; margin-left: 2px; }
+.mini-btn.done-on { background: var(--accent-soft); color: var(--accent); }
+.arow2.is-done .n { color: var(--muted); }
+
 /* Phones: one day at a time (pick it in the strip). */
 @media (max-width: 699px) {
   .cgrid-head { display: none; }

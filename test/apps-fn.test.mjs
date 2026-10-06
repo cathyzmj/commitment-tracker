@@ -18,6 +18,8 @@ const page = (id, { company, programme, status, open, close, next, url, rolling 
     Sector: { type: 'select', select: { name: sector } },
     Rolling: { type: 'select', select: { name: rolling } },
     Materials: { type: 'multi_select', multi_select: [{ name: 'CV' }, { name: 'Online test' }] },
+    'Materials done': { type: 'multi_select', multi_select: [{ name: 'CV' }] },
+    Done: { type: 'checkbox', checkbox: false },
     URL: { type: 'url', url: url || null },
     'Opening Date': { type: 'date', date: open ? { start: open, end: null } : null },
     'Closing Date': { type: 'date', date: close ? { start: close, end: null } : null },
@@ -48,6 +50,8 @@ assert.equal(blackstone.close, '2026-10-16');
 assert.equal(blackstone.url, 'https://blackstone.example/apply');
 assert.equal(blackstone.status, 'Not started');
 assert.deepEqual(blackstone.materials, ['CV', 'Online test']);
+assert.deepEqual(blackstone.materialsDone, ['CV'], 'checklist ticks are read');
+assert.equal(blackstone.done, false);
 assert.equal(toApplication(pages[1]).close, '2026-11-15', 'date-times keep the day');
 assert.equal(toApplication(pages[1]).closeTime, '17:00');
 assert.equal(toApplication(pages[2]).next, '2026-09-10');
@@ -82,4 +86,34 @@ assert.equal(notShared.status, 502);
 assert.match(notShared.body.error, /Connections/);
 const badToken = await get({ env: { NOTION_TOKEN: 't', NOTION_APPS_DATABASE: DB }, fetchImpl: fakeNotion([{ status: 401, body: {} }]) });
 assert.match(badToken.body.error, /NOTION_TOKEN/);
+// --- updating Done / the checklist
+const PAGE = 'abcdefabcdefabcdefabcdefabcdef12';
+const post = (body, fetchImpl) => handle(new Request('https://x/api/apps', { method: 'POST', headers: { authorization: `Bearer ${KEY}` }, body: JSON.stringify(body) }),
+  { syncStore, env: { NOTION_TOKEN: 't', NOTION_APPS_DATABASE: DB }, fetchImpl }).then(async (r) => ({ status: r.status, body: await r.json() }));
+const pageIn = (db) => ({ ...pages[0], id: PAGE, parent: { type: 'database_id', database_id: db } });
+let patched;
+const notionFor = (db, { patchStatus = 200 } = {}) => async (url, opts) => {
+  if (opts.method === 'PATCH') {
+    patched = JSON.parse(opts.body);
+    const updated = structuredClone(pageIn(db));
+    if (patched.properties.Done) updated.properties.Done.checkbox = patched.properties.Done.checkbox;
+    if (patched.properties['Materials done']) updated.properties['Materials done'].multi_select = patched.properties['Materials done'].multi_select;
+    return new Response(JSON.stringify(patchStatus === 200 ? updated : { code: 'restricted_resource' }), { status: patchStatus });
+  }
+  return new Response(JSON.stringify(pageIn(db)));
+};
+const dashed = DB.replace(/(.{8})(.{4})(.{4})(.{4})(.{12})/, '$1-$2-$3-$4-$5');
+const tick = await post({ id: PAGE, done: true, materialsDone: ['CV', 'Online test'] }, notionFor(dashed));
+assert.equal(tick.status, 200);
+assert.deepEqual(patched.properties, { Done: { checkbox: true }, 'Materials done': { multi_select: [{ name: 'CV' }, { name: 'Online test' }] } });
+assert.equal(tick.body.app.done, true);
+assert.deepEqual(tick.body.app.materialsDone, ['CV', 'Online test']);
+patched = null;
+const foreign = await post({ id: PAGE, done: true }, notionFor('ffffffffffffffffffffffffffffffff'));
+assert.equal(foreign.status, 403, 'pages outside the applications database are refused');
+assert.equal(patched, null, 'and nothing is written');
+const noPerm = await post({ id: PAGE, done: true }, notionFor(DB, { patchStatus: 403 }));
+assert.match(noPerm.body.error, /Update content/, 'explains the missing permission');
+assert.equal((await post({ id: 'not-an-id', done: true }, notionFor(DB))).status, 400);
+assert.equal((await post({ id: PAGE }, notionFor(DB))).status, 400, 'nothing to change');
 console.log('ALL APPS FUNCTION TESTS PASSED');

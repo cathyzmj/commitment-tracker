@@ -835,9 +835,10 @@ let appsDay = null;                     // day picked in that calendar
 
 const APP_INACTIVE = /^(not applicable|rejected|withdrawn|n\/a)$/i;
 const APP_IN_PROGRESS = /submitted|applied|online test|video|interview|assessment|final|\bot\b|\bvi\b/i;
-// open · upcoming · closed · inprogress · offer · inactive
+// done · open · upcoming · closed · inprogress · offer · inactive
 function appPhase(a, today = todayISO()) {
   const s = a.status || '';
+  if (a.done) return 'done';
   if (APP_INACTIVE.test(s)) return 'inactive';
   if (/offer/i.test(s)) return 'offer';
   if (APP_IN_PROGRESS.test(s)) return 'inprogress';
@@ -901,8 +902,14 @@ function appRowHtml(a) {
   ].filter(Boolean).join(' · ');
   const urgent = a.close && phase === 'open' && daysUntil(a.close) <= 7 && daysUntil(a.close) >= 0;
   const notion = a.notionUrl ? notionAppUrl(a.notionUrl) : '';
+  const mats = a.materials || [];
+  const ticked = new Set(a.materialsDone || []);
+  const checklist = mats.length ? `<div class="achecklist">
+      ${mats.map((m) => `<button class="mchk ${ticked.has(m) ? 'on' : ''}" data-act="app-mat" data-id="${a.id}" data-m="${escapeHtml(m)}" aria-pressed="${ticked.has(m)}">
+        <span class="mbox">${ticked.has(m) ? CHECK : ''}</span>${escapeHtml(m)}</button>`).join('')}
+      <span class="mprog">${mats.filter((m) => ticked.has(m)).length}/${mats.length}</span></div>` : '';
   return `
-    <div class="arow2 ${urgent ? 'urgent' : ''}">
+    <div class="arow2 ${urgent ? 'urgent' : ''} ${a.done ? 'is-done' : ''}">
       <div class="ctext">
         <div class="n">${escapeHtml(a.company)}</div>
         ${a.programme ? `<div class="sub">${escapeHtml(a.programme)}</div>` : ''}
@@ -912,8 +919,10 @@ function appRowHtml(a) {
           ${a.sector ? `<span class="achip">${escapeHtml(a.sector)}</span>` : ''}
         </div>
         ${dates ? `<div class="adates">${dates}</div>` : ''}
+        ${checklist}
       </div>
       <div class="abtns">
+        <button class="mini-btn ${a.done ? 'done-on' : ''}" data-act="app-done" data-id="${a.id}" aria-pressed="${!!a.done}">${a.done ? '✓ Done' : 'Mark done'}</button>
         ${a.url ? `<a class="mini-btn primary-mini" href="${escapeHtml(cleanUrl(a.url))}" target="_blank" rel="noopener">Apply ↗</a>` : ''}
         ${notion ? `<a class="mini-btn" href="${escapeHtml(notion)}" ${notion === a.notionUrl ? 'target="_blank" rel="noopener"' : ''}>Notion</a>` : ''}
       </div>
@@ -995,6 +1004,7 @@ function appsTabHtml() {
   const upcoming = withPhase.filter((x) => x.phase === 'upcoming').sort(by('open'));
   const progress = withPhase.filter((x) => x.phase === 'inprogress' || x.phase === 'offer').sort(by('next'));
   const rest = withPhase.filter((x) => x.phase === 'closed' || x.phase === 'inactive');
+  const finished = withPhase.filter((x) => x.phase === 'done');
   const section = (title, list, hint = '') => (list.length ? `<section class="card"><div class="card-head"><h2>${title}</h2><span class="hint">${hint || list.length}</span></div>
     ${list.map((x) => appRowHtml(x.a)).join('')}</section>` : '');
   return header + (warn ? `<section class="card">${warn}</section>` : '') +
@@ -1003,7 +1013,36 @@ function appsTabHtml() {
     section('In progress', progress) +
     section('Open now', openNow) +
     section('Opening soon', upcoming) +
+    (finished.length ? `<details class="card fold"><summary>Done (${finished.length})</summary>${finished.map((x) => appRowHtml(x.a)).join('')}</details>` : '') +
     (rest.length ? `<details class="card fold"><summary>Closed or not applying (${rest.length})</summary>${rest.map((x) => appRowHtml(x.a)).join('')}</details>` : '');
+}
+
+// Ticking Done or a material writes to Notion. The screen updates straight away and goes back if
+// Notion refuses. Changes to one application are sent one after another so they arrive in order.
+const appQueues = {};
+function updateApp(id, change) {
+  const a = state.apps.items.find((x) => x.id === id);
+  if (!a) return;
+  const before = { done: !!a.done, materialsDone: [...(a.materialsDone || [])] };
+  Object.assign(a, change);
+  render();
+  const send = async () => {
+    try {
+      const res = await fetch('/api/apps', {
+        method: 'POST',
+        headers: { authorization: `Bearer ${state.sync.key}`, 'content-type': 'application/json' },
+        body: JSON.stringify({ id, ...change }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.error || `Couldn’t update Notion (${res.status})`);
+      writeState().catch(() => {});
+    } catch (e) {
+      Object.assign(a, before);
+      toast(e.message === 'Failed to fetch' ? 'Offline. Couldn’t update Notion.' : e.message);
+      if (route.tab === 'apps' || route.tab === 'today') render();
+    }
+  };
+  appQueues[id] = (appQueues[id] || Promise.resolve()).then(send);
 }
 
 // Small "closing this week" card for Today.
@@ -2368,6 +2407,19 @@ document.addEventListener('click', (e) => {
   const periodItem = () => state.weeks[btn.dataset.wk]?.items[btn.dataset.id];
   switch (act) {
     case 'apps-refresh': refreshApps({ force: true }); break;
+    case 'app-done': {
+      const a = state.apps.items.find((x) => x.id === btn.dataset.id);
+      if (a) { updateApp(a.id, { done: !a.done }); toast(a.done ? `${a.company}: done ✓` : `${a.company}: not done`); }
+      break;
+    }
+    case 'app-mat': {
+      const a = state.apps.items.find((x) => x.id === btn.dataset.id);
+      if (!a) break;
+      const set = new Set(a.materialsDone || []);
+      if (set.has(btn.dataset.m)) set.delete(btn.dataset.m); else set.add(btn.dataset.m);
+      updateApp(a.id, { materialsDone: [...set] });
+      break;
+    }
     case 'apps-day': appsDay = appsDay === btn.dataset.date ? null : btn.dataset.date; render(); break;
     case 'apps-month': {
       const [y, m] = appsMonth.split('-').map(Number);
