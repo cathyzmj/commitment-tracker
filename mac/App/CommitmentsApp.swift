@@ -1,0 +1,39 @@
+import SwiftUI
+
+@main
+struct CommitmentsApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+    @StateObject private var web = WebController()
+
+    var body: some Scene {
+        Window("Commitments", id: "main") {
+            WebContainer(controller: web)
+                .frame(minWidth: 420, minHeight: 560)
+                .onOpenURL { web.open($0) } // commitments://today etc. (from the widget)
+        }
+        .defaultSize(width: 1100, height: 780)
+        .commands {
+            CommandGroup(replacing: .newItem) {}
+            CommandMenu("Go") {
+                Button("Today") { web.go("today") }.keyboardShortcut("1")
+                Button("Week") { web.go("week") }.keyboardShortcut("2")
+                Button("Calendar") { web.go("cal") }.keyboardShortcut("3")
+                Button("Applications") { web.go("apps") }.keyboardShortcut("4")
+                Button("Commitments") { web.go("commitments") }.keyboardShortcut("5")
+                Divider()
+                Button("Reload") { web.reload() }.keyboardShortcut("r")
+            }
+        }
+    }
+}
+
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    // Closing the window quits the app; the widget reopens it when clicked.
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+}
+
+struct WebContainer: NSViewRepresentable {
+    let controller: WebController
+    func makeNSView(context: Context) -> NSView { controller.webView }
+    func updateNSView(_ nsView: NSView, context: Context) {}
+}

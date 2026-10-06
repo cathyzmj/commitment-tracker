@@ -1,0 +1,19 @@
+# Cloudflare Worker config. Deploy with:  npm run deploy
+name = "commitments"
+main = "server/worker.mjs"
+compatibility_date = "2026-09-01"
+
+[build]
+command = "node scripts/build.mjs"
+
+[assets]
+directory = "./dist"
+binding = "ASSETS"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "commitments"
+database_id = "6b7c442c-a774-4dec-a005-7dad6de51fb2"
+
+[observability]
+enabled = false

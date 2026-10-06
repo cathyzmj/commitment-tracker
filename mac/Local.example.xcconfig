@@ -1,0 +1,7 @@
+// Copy to Local.xcconfig (not committed) and fill in. Used by project.yml.
+// Your Apple developer team ID (Xcode → Settings → Accounts → your team).
+DEVELOPMENT_TEAM = ABCDE12345
+// Reverse-DNS prefix for the app's bundle ID, e.g. com.yourname
+BUNDLE_ID_PREFIX = com.example
+// Host name where the web app is deployed (no https://), e.g. commitments.yourname.workers.dev
+APP_HOST = commitments.example.workers.dev

@@ -1,0 +1,14 @@
+{
+  "name": "commitment-tracker",
+  "private": true,
+  "description": "Server code runs as a Cloudflare Worker (server/worker.mjs); the app itself has no dependencies.",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "dev": "node scripts/build.mjs && wrangler dev",
+    "deploy": "wrangler deploy",
+    "test": "TZ=Europe/London node test/ics.test.js && node test/widget-fn.test.mjs && node test/widget-script.test.mjs && node test/sync-fn.test.mjs && node test/apps-fn.test.mjs && node test/d1-store.test.mjs"
+  },
+  "devDependencies": {
+    "wrangler": "^4.147.0"
+  }
+}

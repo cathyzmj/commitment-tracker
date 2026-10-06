@@ -1,0 +1,11 @@
+import { handle as handler } from '../server/ics.mjs';
+const call = async (label, url) => { const r = await handler(new Request('https://x/api/ics', { method: 'POST', body: JSON.stringify({ url }) })); const t = await r.text(); console.log(label.padEnd(34), r.status, t.startsWith('BEGIN:VCALENDAR') ? `ics ${t.length} bytes` : t); };
+await call('google public holidays', 'https://calendar.google.com/calendar/ical/en.uk%23holiday%40group.v.calendar.google.com/public/basic.ics');
+await call('google subscribed (import) cal', 'https://calendar.google.com/calendar/ical/abc123%40import.calendar.google.com/public/basic.ics');
+await call('google public addr of private cal', 'https://calendar.google.com/calendar/ical/someone.test%40gmail.com/public/basic.ics');
+await call('google bad secret', 'https://calendar.google.com/calendar/ical/someone.test%40gmail.com/private-0123abcd/basic.ics');
+await call('non-google .ics host (webcal)', 'webcal://www.officeholidays.com/ics/united-kingdom');
+await call('normal web page (not a calendar)', 'https://example.com/');
+await call('IP address', 'https://169.254.169.254/latest/meta-data');
+await call('localhost', 'https://localhost/x.ics');
+await call('custom port', 'https://calendar.google.com:8443/x.ics');

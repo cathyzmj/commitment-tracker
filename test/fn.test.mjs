@@ -1,0 +1,14 @@
+import { handle as handler } from '../server/ics.mjs';
+import ics from '../ics.js';
+const call = (body, method = 'POST') => handler(new Request('https://x/api/ics', { method, body: method === 'POST' ? JSON.stringify(body) : undefined, headers: { 'content-type': 'application/json' } }));
+const show = async (label, res) => { const t = await res.text(); console.log(label.padEnd(26), res.status, t.startsWith('BEGIN:VCALENDAR') ? `ics ${t.length} bytes` : t); return t; };
+const gcal = 'https://calendar.google.com/calendar/ical/en.uk%23holiday%40group.v.calendar.google.com/public/basic.ics';
+const text = await show('google public (https)', await call({ url: gcal }));
+await show('google via webcal://', await call({ url: gcal.replace('https://', 'webcal://') }));
+await show('disallowed host', await call({ url: 'https://example.com/a.ics' }));
+await show('internal address', await call({ url: 'http://169.254.169.254/latest' }));
+await show('http (not https)', await call({ url: 'http://calendar.google.com/x.ics' }));
+await show('bad google path', await call({ url: 'https://calendar.google.com/calendar/ical/nope/private-123/basic.ics' }));
+await show('GET', await call(null, 'GET'));
+const hol = ics.parseIcs(text, { from: new Date(2026, 0, 1), to: new Date(2027, 0, 1) });
+console.log('UK holidays 2026 parsed:', hol.length, hol.slice(0, 3).map((h) => `${h.date} ${h.summary}`).join(' | '));
