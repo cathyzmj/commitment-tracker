@@ -506,6 +506,11 @@ textarea.code { width: 100%; font: 12px/1.4 ui-monospace, Menlo, monospace; min-
   .chip-app.k-next { background: #3a2e17; color: #f3c56b; }
 }
 
+/* Date to be confirmed */
+.form[data-tbc="true"] .tbc-hide { display: none !important; }
+.form .toggle-row.only-once { display: none; }
+.form[data-freq="once"] .toggle-row.only-once { display: flex; }
+
 /* Application checklist */
 .achecklist { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; margin-top: 8px; }
 .mchk { display: inline-flex; align-items: center; gap: 5px; border: 1px solid var(--line); background: var(--card); border-radius: 99px; padding: 3px 9px 3px 4px; font-size: 12px; font-weight: 600; color: var(--ink); }

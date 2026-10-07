@@ -174,6 +174,7 @@ function normaliseCommitment(c) {
   n.links = (Array.isArray(n.links) ? n.links : []).map((l) => ({ label: String(l.label || ''), url: cleanUrl(l.url) })).filter((l) => l.url);
   n.notionUrl = cleanUrl(n.notionUrl);
   n.time = validTime(n.time); n.endTime = validTime(n.endTime);
+  n.tbc = n.freq === 'once' && !n.date; // date to be confirmed
   return n;
 }
 function normaliseItem(it) {
@@ -624,8 +625,18 @@ function todayTabHtml() {
       ${onceToday.map(([id, it]) => periodRowHtml(wk, id, it)).join('')}</section>` : ''}
     ${weekly.length ? `<section class="card"><div class="card-head"><h2>This week</h2><span class="hint">Weekly goals</span></div>
       ${weekly.map(([id, it]) => periodRowHtml(wk, id, it)).join('')}</section>` : ''}
+    ${tbcTodayHtml()}
     ${onceLater.length ? `<section class="card"><div class="card-head"><h2>Coming up this week</h2></div>
       ${onceLater.map(([id, it]) => periodRowHtml(wk, id, it, { showDate: true })).join('')}</section>` : ''}`;
+}
+
+// One-offs whose date is still to be confirmed (shown folded on Today).
+function tbcTodayHtml() {
+  const list = state.commitments.filter((c) => c.freq === 'once' && !c.date && !c.archived);
+  if (!list.length) return '';
+  return `<details class="card fold"><summary>Date to be confirmed (${list.length})</summary>
+    ${list.map((c) => `<a class="crow" href="#/c/${c.id}"><div class="ctext"><div class="n">${escapeHtml(c.name)}</div>
+      <div class="sub">${escapeHtml(c.section)} · tap to set a date</div></div><span class="chev">›</span></a>`).join('')}</details>`;
 }
 
 // Compact schedule list: time · name · place. Past sessions are dimmed.
@@ -1101,6 +1112,7 @@ function sectionNames() {
 function metaLine(c) {
   const parts = [c.kind === 'counter' ? 'Counter' : 'Task', targetLabel(c)];
   if (c.freq === 'once' && c.date) parts.unshift(...[fmtShort(c.date), timeRange(c)].filter(Boolean));
+  if (c.freq === 'once' && !c.date) parts.unshift('Date TBC');
   if (c.source) parts.push('📅');
   return parts.join(' · ');
 }
@@ -1122,8 +1134,9 @@ function commitmentsTabHtml() {
   };
   const today = todayISO();
   const once = sortedCommitments('once').filter((c) => !c.schedule);
-  const upcoming = once.filter((c) => (c.date || '') >= today);
-  const past = once.filter((c) => (c.date || '') < today).reverse();
+  const tbcList = once.filter((c) => !c.date);
+  const upcoming = [...tbcList, ...once.filter((c) => c.date && c.date >= today)];
+  const past = once.filter((c) => c.date && c.date < today).reverse();
   const archived = state.commitments.filter((c) => c.archived);
   return `
     <header class="top">
@@ -1191,6 +1204,11 @@ function detailPageHtml(id) {
       ${periodRowHtml(wk, id, it)}`;
   }
 
+  if (c.freq === 'once' && !c.date) {
+    progress = `<div class="card-head"><h2>Date to be confirmed</h2></div>
+      <p class="small muted pad">Not on your calendar yet. Set a date when it's fixed.</p>
+      <a class="btn primary full" href="#/c/${id}/edit">Set date</a>`;
+  }
   const links = [];
   if (c.notionUrl) {
     const appUrl = notionAppUrl(c.notionUrl);
@@ -1257,12 +1275,14 @@ function editPageHtml() {
     </header>
     <datalist id="sections">${sectionNames().map((s) => `<option value="${escapeHtml(s)}">`).join('')}</datalist>
     <form id="cform" class="card form" data-form="commitment" data-id="${isNew ? '' : c.id}"
-      data-freq="${c.freq}" data-kind="${c.kind}" data-hourunit="${isHourUnit(c.unit)}">
+      data-freq="${c.freq}" data-kind="${c.kind}" data-hourunit="${isHourUnit(c.unit)}" data-tbc="${!!c.tbc}">
       <label class="f">Name<input name="name" required value="${escapeHtml(c.name)}" placeholder="e.g. Practice questions"></label>
       <label class="f">Section<input name="section" list="sections" value="${escapeHtml(c.section === 'Other' && isNew ? '' : c.section)}" placeholder="e.g. Career prep"></label>
       <div class="f">How often<div class="seg">${radio('freq', 'daily', 'Daily', c.freq)}${radio('freq', 'weekly', 'Weekly', c.freq)}${radio('freq', 'once', 'One-off', c.freq)}</div></div>
-      <label class="f only-once">Date<input type="date" name="date" value="${c.date || todayISO()}"></label>
-      <div class="f2 only-once">
+      ${c.source ? '' : `<label class="toggle-row only-once"><input type="checkbox" name="tbc" ${c.tbc ? 'checked' : ''}>
+        <span>Date to be confirmed<small>Keep it on your list without a date; set one when it's fixed.</small></span></label>`}
+      <label class="f only-once tbc-hide">Date<input type="date" name="date" value="${c.date || todayISO()}"></label>
+      <div class="f2 only-once tbc-hide">
         <label class="f">Start time<input type="time" name="time" value="${c.time || ''}"></label>
         <label class="f">End time<input type="time" name="endTime" value="${c.endTime || ''}"></label>
       </div>
@@ -1300,9 +1320,10 @@ function saveCommitmentForm(form) {
   const fields = {
     name, freq, kind, unit, target,
     section: String(f.get('section') || '').trim() || 'Other',
-    date: freq === 'once' ? (f.get('date') || todayISO()) : null,
-    time: freq === 'once' ? validTime(f.get('time')) : null,
-    endTime: freq === 'once' ? validTime(f.get('endTime')) : null,
+    date: freq === 'once' && f.get('tbc') !== 'on' ? (f.get('date') || todayISO()) : null,
+    tbc: freq === 'once' && f.get('tbc') === 'on',
+    time: freq === 'once' && f.get('tbc') !== 'on' ? validTime(f.get('time')) : null,
+    endTime: freq === 'once' && f.get('tbc') !== 'on' ? validTime(f.get('endTime')) : null,
     step: kind === 'counter' ? num(f.get('step'), 0) || (isHourUnit(unit) ? 0.5 : 1) : 1,
     hours: kind === 'counter' && isHourUnit(unit) ? target : num(f.get('hours')),
     notes: String(f.get('notes') || '').trim(),
@@ -2545,6 +2566,7 @@ function syncFormVisibility(form) {
   form.dataset.freq = fd.get('freq');
   form.dataset.kind = fd.get('kind');
   form.dataset.hourunit = String(isHourUnit(fd.get('unit')));
+  form.dataset.tbc = String(fd.get('tbc') === 'on');
 }
 document.addEventListener('input', (e) => {
   const form = e.target.closest('form[data-form="commitment"]');
