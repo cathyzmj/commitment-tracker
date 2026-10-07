@@ -835,7 +835,7 @@ let appsDay = null;                     // day picked in that calendar
 
 const APP_INACTIVE = /^(not applicable|rejected|withdrawn|n\/a)$/i;
 const APP_IN_PROGRESS = /submitted|applied|online test|video|interview|assessment|final|\bot\b|\bvi\b/i;
-// done · open · upcoming · closed · inprogress · offer · inactive
+// done · open · upcoming · unknown (no opening date yet) · closed · inprogress · offer · inactive
 function appPhase(a, today = todayISO()) {
   const s = a.status || '';
   if (a.done) return 'done';
@@ -843,7 +843,8 @@ function appPhase(a, today = todayISO()) {
   if (/offer/i.test(s)) return 'offer';
   if (APP_IN_PROGRESS.test(s)) return 'inprogress';
   if (a.close && a.close < today) return 'closed';
-  if (a.open && a.open > today) return 'upcoming';
+  if (!a.open) return 'unknown'; // only roles that have actually opened count as open
+  if (a.open > today) return 'upcoming';
   return 'open';
 }
 const daysUntil = (iso) => Math.round((parseISO(iso) - startOfToday()) / 864e5);
@@ -863,7 +864,7 @@ function appEvents() {
     const phase = appPhase(a);
     if (phase === 'inactive' || phase === 'offer') continue;
     if (a.open && (phase === 'open' || phase === 'upcoming')) out.push({ date: a.open, kind: 'open', a });
-    if (a.close && (phase === 'open' || phase === 'upcoming' || phase === 'closed')) out.push({ date: a.close, kind: 'close', a });
+    if (a.close && ['open', 'upcoming', 'unknown', 'closed'].includes(phase)) out.push({ date: a.close, kind: 'close', a });
     if (a.next && phase === 'inprogress') out.push({ date: a.next, kind: 'next', a });
   }
   return out;
@@ -1005,6 +1006,7 @@ function appsTabHtml() {
   const progress = withPhase.filter((x) => x.phase === 'inprogress' || x.phase === 'offer').sort(by('next'));
   const rest = withPhase.filter((x) => x.phase === 'closed' || x.phase === 'inactive');
   const finished = withPhase.filter((x) => x.phase === 'done');
+  const unknown = withPhase.filter((x) => x.phase === 'unknown').sort(by('close'));
   const section = (title, list, hint = '') => (list.length ? `<section class="card"><div class="card-head"><h2>${title}</h2><span class="hint">${hint || list.length}</span></div>
     ${list.map((x) => appRowHtml(x.a)).join('')}</section>` : '');
   return header + (warn ? `<section class="card">${warn}</section>` : '') +
@@ -1013,6 +1015,7 @@ function appsTabHtml() {
     section('In progress', progress) +
     section('Open now', openNow) +
     section('Opening soon', upcoming) +
+    (unknown.length ? `<details class="card fold"><summary>No opening date yet (${unknown.length})</summary>${unknown.map((x) => appRowHtml(x.a)).join('')}</details>` : '') +
     (finished.length ? `<details class="card fold"><summary>Done (${finished.length})</summary>${finished.map((x) => appRowHtml(x.a)).join('')}</details>` : '') +
     (rest.length ? `<details class="card fold"><summary>Closed or not applying (${rest.length})</summary>${rest.map((x) => appRowHtml(x.a)).join('')}</details>` : '');
 }
