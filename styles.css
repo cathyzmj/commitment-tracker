@@ -534,6 +534,9 @@ textarea.code { width: 100%; font: 12px/1.4 ui-monospace, Menlo, monospace; min-
 .afollow { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 7px; }
 .fchip { font-size: 11.5px; font-weight: 650; padding: 3px 8px; border-radius: 7px; background: #e8eefc; color: #2f54c4; text-decoration: none; }
 .fchip.on { background: var(--accent-soft); color: var(--accent); }
+.fchip-wrap { display: inline-flex; gap: 2px; }
+.fchip.go { padding: 3px 6px; }
+.mini-btn.go-link { text-decoration: none; color: var(--accent); font-weight: 800; align-self: center; }
 @media (prefers-color-scheme: dark) { .fchip { background: #1f2a44; color: #9db4ff; } }
 .form.flat { padding: 0; box-shadow: none; background: transparent; }
 .form[data-tbc="true"] .tbc-hide { display: none !important; }

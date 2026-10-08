@@ -173,6 +173,7 @@ function normaliseCommitment(c) {
   n.kind = n.kind === 'counter' ? 'counter' : 'task';
   n.links = (Array.isArray(n.links) ? n.links : []).map((l) => ({ label: String(l.label || ''), url: cleanUrl(l.url) })).filter((l) => l.url);
   n.notionUrl = cleanUrl(n.notionUrl);
+  n.stageUrl = cleanUrl(n.stageUrl); // test / interview link for application follow-ups
   n.time = validTime(n.time); n.endTime = validTime(n.endTime);
   n.tbc = n.freq === 'once' && !n.date; // date to be confirmed
   if (n.stage === 'IV') { n.stage = 'IT'; n.name = n.name.replace(/ · IV$/, ' · IT'); } // interview was IV briefly
@@ -365,6 +366,7 @@ const isTask = ([, it]) => !it.schedule;
 const isSched = ([, it]) => !!it.schedule;
 const locationOf = (x) => ((x.notes || '').startsWith('📍') ? x.notes.split('\n')[0].replace('📍', '').trim() : '');
 // Week items don't carry notes, so look the location up on the commitment itself.
+const stageUrlById = (id) => { const c = state.commitments.find((x) => x.id === id); return (c && c.stageUrl) || ''; };
 const locationById = (id) => { const c = state.commitments.find((x) => x.id === id); return c ? locationOf(c) : ''; };
 const onceSortKey = (x) => `${x.date || ''} ${x.time || '  :  '}`;
 function groupBySection(entries, getSection = (e) => e[1].section) {
@@ -555,7 +557,7 @@ function periodRowHtml(wk, id, it, { showDate = false } = {}) {
         <div class="sub">${sub}</div>
         ${it.kind === 'counter' ? `<div class="mini"><i style="width:${pct}%"></i></div>` : ''}
       </a>
-      ${stepper}
+      ${stageUrlById(id) ? `<a class="mini-btn go-link" href="${escapeHtml(stageUrlById(id))}" target="_blank" rel="noopener" title="Open link">↗</a>` : stepper}
     </div>`;
 }
 
@@ -924,8 +926,9 @@ function appRowHtml(a) {
   const notion = a.notionUrl ? notionAppUrl(a.notionUrl) : '';
   const mats = a.materials || [];
   const ticked = new Set(a.materialsDone || []);
-  const followChips = followupsFor(a.id).map((c) => `<a class="fchip ${onceDone(c) ? 'on' : ''}" href="#/c/${c.id}">
-    ${onceDone(c) ? '✓ ' : ''}${escapeHtml(c.stage)} · ${c.date ? fmtDayShort(c.date) : 'TBC'}</a>`).join('');
+  const followChips = followupsFor(a.id).map((c) => `<span class="fchip-wrap"><a class="fchip ${onceDone(c) ? 'on' : ''}" href="#/c/${c.id}">
+    ${onceDone(c) ? '✓ ' : ''}${escapeHtml(c.stage)} · ${c.date ? fmtDayShort(c.date) : 'TBC'}</a>${c.stageUrl
+    ? `<a class="fchip go" href="${escapeHtml(c.stageUrl)}" target="_blank" rel="noopener" title="Open ${escapeHtml(c.stage)} link">↗</a>` : ''}</span>`).join('');
   const checklist = mats.length ? `<div class="achecklist">
       ${mats.map((m) => `<button class="mchk ${ticked.has(m) ? 'on' : ''}" data-act="app-mat" data-id="${a.id}" data-m="${escapeHtml(m)}" aria-pressed="${ticked.has(m)}">
         <span class="mbox">${ticked.has(m) ? CHECK : ''}</span>${escapeHtml(m)}</button>`).join('')}
@@ -1090,6 +1093,7 @@ function openFollowupSheet(appId) {
         <label class="f">Due / date<input type="date" name="date" value="${todayISO()}"></label>
         <label class="f">Time (optional)<input type="time" name="time"></label>
       </div>
+      <label class="f">Test / interview link (optional)<input name="url" inputmode="url" autocapitalize="off" autocorrect="off" placeholder="HireVue invite, test portal, Zoom…"></label>
       <label class="toggle-row"><input type="checkbox" name="notion" checked>
         <span>Update Notion<small>Set Next ddl to this date, and the status where it matches (e.g. HV → Video interview).</small></span></label>
       <button class="btn primary" type="submit">Add follow-up</button>
@@ -1110,7 +1114,7 @@ function saveFollowup(form) {
     notes: [`${abbr === 'Other' ? label : stageName} for ${a.company}${a.programme ? ` – ${a.programme}` : ''}`,
       a.close ? `Application closes ${fmtDayShort(a.close)}` : ''].filter(Boolean).join('\n'),
     notionUrl: cleanUrl(a.notionUrl), links: a.url && cleanUrl(a.url) ? [{ label: 'Application', url: cleanUrl(a.url) }] : [],
-    appRef: a.id, stage: label, order: nextOrder(),
+    appRef: a.id, stage: label, stageUrl: cleanUrl(f.get('url')), order: nextOrder(),
   }));
   save();
   closeSheet();
@@ -1306,6 +1310,12 @@ function detailPageHtml(id) {
       ${periodRowHtml(wk, id, it)}`;
   }
 
+  const stageCard = !c.stage ? '' : c.stageUrl
+    ? `<section class="card"><a class="btn primary full" href="${escapeHtml(c.stageUrl)}" target="_blank" rel="noopener">Open ${escapeHtml(c.stage)} link ↗</a>
+        <p class="small muted center pad">${escapeHtml(hostOf(c.stageUrl))} · <a href="#/c/${id}/edit">change</a></p></section>`
+    : `<form class="card form" data-form="stage-link" data-id="${id}">
+        <label class="f">${escapeHtml(c.stage)} link<input name="url" inputmode="url" autocapitalize="off" autocorrect="off" placeholder="Paste the test or interview link"></label>
+        <button class="btn primary" type="submit">Save link</button></form>`;
   if (c.freq === 'once' && !c.date) {
     progress = `<div class="card-head"><h2>Date to be confirmed</h2></div>
       <p class="small muted pad">Not on your calendar yet. Set a date when it's fixed.</p>
@@ -1345,6 +1355,7 @@ function detailPageHtml(id) {
       <div class="chips-meta"><span>${c.kind === 'counter' ? 'Counter' : 'Task'}</span><span>${targetLabel(c)}</span>${c.archived ? '<span>Archived</span>' : ''}</div>
       ${sourceNoteHtml(c)}
     </header>
+    ${stageCard}
     ${progress ? `<section class="card">${progress}</section>` : ''}
     <section class="card">
       <div class="card-head"><h2>What to do</h2></div>
@@ -1400,6 +1411,7 @@ function editPageHtml() {
       <label class="f only-time"><span>Planned time (hours <span class="per-day">per day</span><span class="per-week">per week</span><span class="per-once">total</span>)</span>
         <input name="hours" type="number" inputmode="decimal" min="0" step="0.25" value="${round2(c.hours)}"></label>
       <label class="f">What to do<textarea name="notes" rows="5" placeholder="Steps, chapter you're on, checklist…">${escapeHtml(c.notes)}</textarea></label>
+      ${c.stage ? `<label class="f">Test / interview link<input name="stageUrl" inputmode="url" autocapitalize="off" autocorrect="off" value="${escapeHtml(c.stageUrl || '')}" placeholder="HireVue invite, test portal, Zoom…"></label>` : ''}
       <label class="f">Notion page<input name="notionUrl" inputmode="url" autocapitalize="off" autocorrect="off" value="${escapeHtml(c.notionUrl)}" placeholder="https://www.notion.so/…"></label>
       <div class="f">Links<div class="linklist">${(c.links.length ? c.links : [undefined]).map(linkRow).join('')}</div>
         <button type="button" class="mini-btn add-link" data-act="addlink">+ Add link</button></div>
@@ -1430,6 +1442,7 @@ function saveCommitmentForm(form) {
     hours: kind === 'counter' && isHourUnit(unit) ? target : num(f.get('hours')),
     notes: String(f.get('notes') || '').trim(),
     notionUrl: cleanUrl(f.get('notionUrl')),
+    ...(f.has('stageUrl') ? { stageUrl: cleanUrl(f.get('stageUrl')) } : {}),
     links: f.getAll('linkUrl').map((u, i) => ({ label: String(f.getAll('linkLabel')[i] || '').trim(), url: cleanUrl(u) })).filter((l) => l.url),
   };
   let c = state.commitments.find((x) => x.id === form.dataset.id);
@@ -2727,6 +2740,12 @@ document.addEventListener('submit', (e) => {
   else if (form === 'review') submitReview(e.target);
   else if (form === 'sync-join') joinSync(e.target);
   else if (form === 'followup') saveFollowup(e.target);
+  else if (form === 'stage-link') {
+    const c = state.commitments.find((x) => x.id === e.target.dataset.id);
+    const url = cleanUrl(new FormData(e.target).get('url'));
+    if (!c || !url) { toast('Paste a full link (https://…)'); return; }
+    c.stageUrl = url; save(); render(); toast('Link saved');
+  }
 });
 
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !$sheet.hidden) closeSheet(); });
