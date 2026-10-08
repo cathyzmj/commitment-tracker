@@ -1,6 +1,7 @@
 // GET  /api/apps — your application tracker from Notion (opening dates, deadlines, apply links,
 //                  Done and the Materials checklist).
-// POST /api/apps  { id, done?, materialsDone? } — tick an application or its materials; writes the
+// POST /api/apps  { id, done?, materialsDone?, status?, next? } — tick an application or its
+//                  materials, set its status or next deadline (YYYY-MM-DD or null); writes the
 //                  page in Notion (needs the integration's "Update content" capability). Only pages
 //                  in the configured database can be changed.
 //
@@ -134,6 +135,15 @@ async function updateApplication(req, { token, database, fetchImpl }) {
     if (!n) return json(400, { error: 'Add a “Materials done” field to the database in Notion first.' });
     const names = [...new Set(input.materialsDone.map((x) => String(x).slice(0, 100)))].slice(0, 25);
     properties[n] = { multi_select: names.map((name) => ({ name })) };
+  }
+  if (typeof input.status === 'string' && input.status.trim()) {
+    const n = propName(props, 'select', ['My Status', 'Status', 'Stage'], /status|stage/i)
+      || propName(props, 'status', ['Status'], /./);
+    if (n) properties[n] = props[n].type === 'status' ? { status: { name: input.status.slice(0, 100) } } : { select: { name: input.status.slice(0, 100) } };
+  }
+  if (input.next === null || (typeof input.next === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(input.next))) {
+    const n = propName(props, 'date', ['Next ddl', 'Next deadline'], /next|ddl/i);
+    if (n) properties[n] = { date: input.next ? { start: input.next } : null };
   }
   if (!Object.keys(properties).length) return json(400, { error: 'Nothing to change.' });
 

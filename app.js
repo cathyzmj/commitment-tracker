@@ -876,7 +876,8 @@ function appEvents() {
     if (phase === 'inactive' || phase === 'offer') continue;
     if (a.open && (phase === 'open' || phase === 'upcoming')) out.push({ date: a.open, kind: 'open', a });
     if (a.close && ['open', 'upcoming', 'unknown', 'closed'].includes(phase)) out.push({ date: a.close, kind: 'close', a });
-    if (a.next && phase === 'inprogress') out.push({ date: a.next, kind: 'next', a });
+    // A follow-up task on that day already shows it, so skip the extra "next step" chip.
+    if (a.next && phase === 'inprogress' && !followupsFor(a.id).some((c) => c.date === a.next)) out.push({ date: a.next, kind: 'next', a });
   }
   return out;
 }
@@ -932,8 +933,11 @@ function appRowHtml(a) {
         </div>
         ${dates ? `<div class="adates">${dates}</div>` : ''}
         ${checklist}
+        ${followupsFor(a.id).length ? `<div class="afollow">${followupsFor(a.id).map((c) => `<a class="fchip ${onceDone(c) ? 'on' : ''}" href="#/c/${c.id}">
+          ${onceDone(c) ? '✓ ' : ''}${escapeHtml(c.stage)} · ${c.date ? fmtDayShort(c.date) : 'TBC'}</a>`).join('')}</div>` : ''}
       </div>
       <div class="abtns">
+        ${a.done ? '' : `<button class="mini-btn" data-act="app-followup" data-id="${a.id}">+ Follow-up</button>`}
         ${todayTaskFor(a.id)
           ? `<button class="mini-btn done-on" data-act="app-today" data-id="${a.id}" aria-pressed="true" title="Tap again to remove from today">✓ On today</button>`
           : (a.done ? '' : `<button class="mini-btn" data-act="app-today" data-id="${a.id}" aria-pressed="false">+ Today</button>`)}
@@ -1032,6 +1036,79 @@ function appsTabHtml() {
     (unknown.length ? `<details class="card fold"><summary>No opening date yet (${unknown.length})</summary>${unknown.map((x) => appRowHtml(x.a)).join('')}</details>` : '') +
     (finished.length ? `<details class="card fold"><summary>Done (${finished.length})</summary>${finished.map((x) => appRowHtml(x.a)).join('')}</details>` : '') +
     (rest.length ? `<details class="card fold"><summary>Closed or not applying (${rest.length})</summary>${rest.map((x) => appRowHtml(x.a)).join('')}</details>` : '');
+}
+
+// ---------- Application follow-ups (OT, HV, interviews…) ----------
+// A follow-up is a one-off task in the Applications section, linked to its application (appRef)
+// and tagged with a stage. It can also set the role's Next ddl and status in Notion.
+const FOLLOWUP_STAGES = [
+  // [abbreviation, name, planned hours, matching Notion status]
+  ['OT', 'Online test', 1, 'Online test'],
+  ['HV', 'HireVue', 0.5, 'Video interview'],
+  ['VI', 'Video interview', 0.5, 'Video interview'],
+  ['PI', 'Phone interview', 0.5, ''],
+  ['IV', 'Interview', 1, ''],
+  ['AC', 'Assessment centre', 4, ''],
+  ['SD', 'Superday', 4, ''],
+  ['GA', 'Game-based assessment', 0.5, 'Online test'],
+  ['SJT', 'Situational judgement test', 0.5, 'Online test'],
+  ['Other', 'Other', 1, ''],
+];
+const stageInfo = (abbr) => FOLLOWUP_STAGES.find((x) => x[0] === abbr) || ['Other', abbr, 1, ''];
+const followupsFor = (appId) => state.commitments.filter((c) => c.appRef === appId && c.stage && !c.archived)
+  .sort((x, y) => onceSortKey(x).localeCompare(onceSortKey(y)));
+function onceDone(c) {
+  const it = c.date && state.weeks[weekOf(c.date)] && state.weeks[weekOf(c.date)].items[c.id];
+  return !!(it && periodDone(it));
+}
+
+function openFollowupSheet(appId) {
+  const a = state.apps.items.find((x) => x.id === appId);
+  if (!a) return;
+  openSheet(`
+    <div class="sheet-head"><h3>Follow-up · ${escapeHtml(a.company)}</h3>
+      <p class="muted">${escapeHtml(a.programme || '')}</p></div>
+    <form class="form flat" data-form="followup" data-app="${a.id}" data-tbc="false" data-freq="once">
+      <div class="stage-grid">${FOLLOWUP_STAGES.map(([ab, name], i) => `<label class="stage"><input type="radio" name="stage" value="${ab}" ${i === 0 ? 'checked' : ''}>
+        <span><b>${ab === 'Other' ? '…' : ab}</b><small>${name}</small></span></label>`).join('')}</div>
+      <label class="f stage-other" hidden>Label<input name="label" placeholder="e.g. Case study"></label>
+      <label class="toggle-row only-once"><input type="checkbox" name="tbc"><span>Date to be confirmed</span></label>
+      <div class="f2 tbc-hide">
+        <label class="f">Due / date<input type="date" name="date" value="${todayISO()}"></label>
+        <label class="f">Time (optional)<input type="time" name="time"></label>
+      </div>
+      <label class="toggle-row"><input type="checkbox" name="notion" checked>
+        <span>Update Notion<small>Set Next ddl to this date, and the status where it matches (e.g. HV → Video interview).</small></span></label>
+      <button class="btn primary" type="submit">Add follow-up</button>
+    </form>`, { followup: appId });
+}
+
+function saveFollowup(form) {
+  const f = new FormData(form);
+  const a = state.apps.items.find((x) => x.id === form.dataset.app);
+  if (!a) return;
+  const [abbr, stageName, hours, notionStatus] = stageInfo(f.get('stage'));
+  const label = abbr === 'Other' ? (String(f.get('label') || '').trim() || 'Follow-up') : abbr;
+  const tbc = f.get('tbc') === 'on';
+  const date = tbc ? null : (f.get('date') || todayISO());
+  state.commitments.push(newCommitment({
+    name: `${a.company} · ${label}`, section: 'Applications', freq: 'once', kind: 'task',
+    date, tbc, time: tbc ? null : validTime(f.get('time')), hours,
+    notes: [`${abbr === 'Other' ? label : stageName} for ${a.company}${a.programme ? ` – ${a.programme}` : ''}`,
+      a.close ? `Application closes ${fmtDayShort(a.close)}` : ''].filter(Boolean).join('\n'),
+    notionUrl: cleanUrl(a.notionUrl), links: a.url && cleanUrl(a.url) ? [{ label: 'Application', url: cleanUrl(a.url) }] : [],
+    appRef: a.id, stage: label, order: nextOrder(),
+  }));
+  save();
+  closeSheet();
+  if (f.get('notion') === 'on') {
+    const change = {};
+    if (date) change.next = date;
+    if (notionStatus && notionStatus !== a.status) change.status = notionStatus;
+    if (Object.keys(change).length) updateApp(a.id, change);
+  }
+  render();
+  toast(`Added ${a.company} · ${label}${date ? ` for ${fmtDayShort(date)}` : ' (date TBC)'}`);
 }
 
 // "+ Today": a one-off task for today that links back to the application.
@@ -1144,7 +1221,7 @@ function commitmentsTabHtml() {
       ${body || '<p class="muted pad small">None yet.</p>'}</section>`;
   };
   const today = todayISO();
-  const once = sortedCommitments('once').filter((c) => !c.schedule);
+  const once = sortedCommitments('once').filter((c) => !c.schedule && !c.appRef);
   const tbcList = once.filter((c) => !c.date);
   const upcoming = [...tbcList, ...once.filter((c) => c.date && c.date >= today)];
   const past = once.filter((c) => c.date && c.date < today).reverse();
@@ -1157,6 +1234,7 @@ function commitmentsTabHtml() {
     ${block('daily', 'Daily', sortedCommitments('daily'))}
     ${block('weekly', 'Weekly', sortedCommitments('weekly'))}
     ${block('once', 'One-off', upcoming)}
+    ${applicationsCardHtml()}
     ${calendarsCardHtml()}
     ${past.length ? `<details class="card fold"><summary>Past one-offs (${past.length})</summary>${past.map((c) => row(c, 0, [c])).join('')}</details>` : ''}
     ${archived.length ? `<details class="card fold"><summary>Archived (${archived.length})</summary>
@@ -1612,6 +1690,24 @@ function sourceNoteHtml(c) {
   if (!c.source) return '';
   const feed = state.calendars.feeds.find((f) => f.id === c.source.feed);
   return `<p class="source-note">📅 From ${escapeHtml(feed ? feed.name : 'your calendar')}. Date and time follow the calendar.</p>`;
+}
+
+// Tasks linked to applications (+ Today and follow-ups), grouped by application.
+function applicationsCardHtml() {
+  const linked = state.commitments.filter((c) => c.appRef && !c.archived);
+  if (!linked.length) return '';
+  const groups = new Map();
+  for (const c of linked.sort((x, y) => onceSortKey(x).localeCompare(onceSortKey(y)))) {
+    if (!groups.has(c.appRef)) groups.set(c.appRef, []);
+    groups.get(c.appRef).push(c);
+  }
+  const companyOf = (id, list) => (state.apps.items.find((a) => a.id === id) || {}).company || list[0].name.split(' · ')[0].replace(/^Apply: /, '');
+  return `<section class="card">
+    <div class="card-head"><h2>Applications</h2><a class="txt-btn" href="#/apps">All roles ›</a></div>
+    ${[...groups].map(([id, list]) => `<div class="sec">${escapeHtml(companyOf(id, list))}</div>
+      ${list.map((c) => `<a class="crow" href="#/c/${c.id}"><div class="ctext"><div class="n">${onceDone(c) ? '✓ ' : ''}${escapeHtml(c.stage ? `${c.stage}${stageInfo(c.stage)[1] !== c.stage ? ` · ${stageInfo(c.stage)[1]}` : ''}` : c.name)}</div>
+        <div class="sub">${c.date ? `${fmtShort(c.date)}${c.time ? ` · ${c.time}` : ''}` : 'Date TBC'}</div></div><span class="chev">›</span></a>`).join('')}`).join('')}
+  </section>`;
 }
 
 function calendarsCardHtml() {
@@ -2464,6 +2560,7 @@ document.addEventListener('click', (e) => {
   switch (act) {
     case 'apps-refresh': refreshApps({ force: true }); break;
     case 'app-today': toggleAppToday(btn.dataset.id); break;
+    case 'app-followup': openFollowupSheet(btn.dataset.id); break;
     case 'app-done': {
       const a = state.apps.items.find((x) => x.id === btn.dataset.id);
       if (a) { updateApp(a.id, { done: !a.done }); toast(a.done ? `${a.company}: done ✓` : `${a.company}: not done`); }
@@ -2572,6 +2669,12 @@ document.addEventListener('click', (e) => {
 });
 
 // Edit form: show/hide fields as frequency, type and unit change.
+function syncFollowupForm(form) {
+  const fd = new FormData(form);
+  form.dataset.tbc = String(fd.get('tbc') === 'on');
+  const other = form.querySelector('.stage-other');
+  if (other) other.hidden = fd.get('stage') !== 'Other';
+}
 function syncFormVisibility(form) {
   const fd = new FormData(form);
   form.dataset.freq = fd.get('freq');
@@ -2580,6 +2683,8 @@ function syncFormVisibility(form) {
   form.dataset.tbc = String(fd.get('tbc') === 'on');
 }
 document.addEventListener('input', (e) => {
+  const fu = e.target.closest('form[data-form="followup"]');
+  if (fu) syncFollowupForm(fu);
   const form = e.target.closest('form[data-form="commitment"]');
   if (form) syncFormVisibility(form);
 });
@@ -2603,6 +2708,7 @@ document.addEventListener('submit', (e) => {
   else if (form === 'calendar-add') addFeed(e.target);
   else if (form === 'review') submitReview(e.target);
   else if (form === 'sync-join') joinSync(e.target);
+  else if (form === 'followup') saveFollowup(e.target);
 });
 
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !$sheet.hidden) closeSheet(); });

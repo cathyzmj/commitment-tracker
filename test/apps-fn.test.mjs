@@ -116,4 +116,9 @@ const noPerm = await post({ id: PAGE, done: true }, notionFor(DB, { patchStatus:
 assert.match(noPerm.body.error, /Update content/, 'explains the missing permission');
 assert.equal((await post({ id: 'not-an-id', done: true }, notionFor(DB))).status, 400);
 assert.equal((await post({ id: PAGE }, notionFor(DB))).status, 400, 'nothing to change');
+await post({ id: PAGE, status: 'Video interview', next: '2026-10-10' }, notionFor(DB));
+assert.deepEqual(patched.properties, { 'My Status': { select: { name: 'Video interview' } }, 'Next ddl': { date: { start: '2026-10-10' } } }, 'status and next deadline are written');
+await post({ id: PAGE, next: null }, notionFor(DB));
+assert.deepEqual(patched.properties, { 'Next ddl': { date: null } }, 'next deadline can be cleared');
+assert.equal((await post({ id: PAGE, next: '10/10/2026' }, notionFor(DB))).status, 400, 'bad dates are ignored');
 console.log('ALL APPS FUNCTION TESTS PASSED');

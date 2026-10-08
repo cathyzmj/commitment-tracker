@@ -506,6 +506,22 @@ textarea.code { width: 100%; font: 12px/1.4 ui-monospace, Menlo, monospace; min-
   .chip-app.k-next { background: #3a2e17; color: #f3c56b; }
 }
 
+/* Application follow-ups */
+.stage-other[hidden] { display: none !important; }
+.stage-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 6px; }
+.stage input { position: absolute; opacity: 0; pointer-events: none; }
+.stage span { display: flex; flex-direction: column; align-items: center; padding: 7px 2px; border-radius: 10px; background: var(--track); cursor: pointer; text-align: center; }
+.stage b { font-size: 14px; }
+.stage small { font-size: 9.5px; color: var(--muted); line-height: 1.15; }
+.stage input:checked + span { background: var(--accent); }
+.stage input:checked + span b, .stage input:checked + span small { color: var(--accent-ink); }
+.afollow { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 7px; }
+.fchip { font-size: 11.5px; font-weight: 650; padding: 3px 8px; border-radius: 7px; background: #e8eefc; color: #2f54c4; text-decoration: none; }
+.fchip.on { background: var(--accent-soft); color: var(--accent); }
+@media (prefers-color-scheme: dark) { .fchip { background: #1f2a44; color: #9db4ff; } }
+.form.flat { padding: 0; box-shadow: none; background: transparent; }
+.form[data-tbc="true"] .tbc-hide { display: none !important; }
+
 /* Date to be confirmed */
 .form[data-tbc="true"] .tbc-hide { display: none !important; }
 .form .toggle-row.only-once { display: none; }
