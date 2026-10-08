@@ -935,8 +935,8 @@ function appRowHtml(a) {
       </div>
       <div class="abtns">
         ${todayTaskFor(a.id)
-          ? `<a class="mini-btn done-on" href="#/c/${todayTaskFor(a.id).id}">✓ On today</a>`
-          : (a.done ? '' : `<button class="mini-btn" data-act="app-today" data-id="${a.id}">+ Today</button>`)}
+          ? `<button class="mini-btn done-on" data-act="app-today" data-id="${a.id}" aria-pressed="true" title="Tap again to remove from today">✓ On today</button>`
+          : (a.done ? '' : `<button class="mini-btn" data-act="app-today" data-id="${a.id}" aria-pressed="false">+ Today</button>`)}
         <button class="mini-btn ${a.done ? 'done-on' : ''}" data-act="app-done" data-id="${a.id}" aria-pressed="${!!a.done}">${a.done ? '✓ Done' : 'Mark done'}</button>
         ${a.url ? `<a class="mini-btn primary-mini" href="${escapeHtml(cleanUrl(a.url))}" target="_blank" rel="noopener">Apply ↗</a>` : ''}
         ${notion ? `<a class="mini-btn" href="${escapeHtml(notion)}" ${notion === a.notionUrl ? 'target="_blank" rel="noopener"' : ''}>Notion</a>` : ''}
@@ -1036,6 +1036,17 @@ function appsTabHtml() {
 
 // "+ Today": a one-off task for today that links back to the application.
 const todayTaskFor = (appId) => state.commitments.find((c) => c.appRef === appId && c.freq === 'once' && c.date === todayISO() && !c.archived);
+// Tapping "+ Today" again (now "✓ On today") takes the task off today.
+function toggleAppToday(appId) {
+  const task = todayTaskFor(appId);
+  if (!task) return addAppToToday(appId);
+  const it = state.weeks[weekOf(task.date)] && state.weeks[weekOf(task.date)].items[task.id];
+  if (it && hasData(it) && !confirm(`“${task.name}” is already ticked off today. Remove it anyway?`)) return;
+  removeCommitment(task.id);
+  save();
+  render();
+  toast(`Removed “${task.name}” from today`);
+}
 function addAppToToday(appId) {
   const a = state.apps.items.find((x) => x.id === appId);
   if (!a || todayTaskFor(appId)) return;
@@ -2452,7 +2463,7 @@ document.addEventListener('click', (e) => {
   const periodItem = () => state.weeks[btn.dataset.wk]?.items[btn.dataset.id];
   switch (act) {
     case 'apps-refresh': refreshApps({ force: true }); break;
-    case 'app-today': addAppToToday(btn.dataset.id); break;
+    case 'app-today': toggleAppToday(btn.dataset.id); break;
     case 'app-done': {
       const a = state.apps.items.find((x) => x.id === btn.dataset.id);
       if (a) { updateApp(a.id, { done: !a.done }); toast(a.done ? `${a.company}: done ✓` : `${a.company}: not done`); }
