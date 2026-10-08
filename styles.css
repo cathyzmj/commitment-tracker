@@ -379,7 +379,8 @@ textarea.code { width: 100%; font: 12px/1.4 ui-monospace, Menlo, monospace; min-
 .full-input { width: 100%; margin: 2px 0 8px; }
 
 /* ---------- Calendar tab ---------- */
-#app[data-tab="cal"] { max-width: 1100px; }
+#app[data-tab="cal"], #app[data-tab="apps"] { max-width: 1100px; }
+#app[data-tab="apps"] section[data-section="Calendar"] { max-width: 640px; margin-left: auto; margin-right: auto; }
 .cstrip { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; margin: 10px 0 0; }
 .cday {
   border: 0; background: transparent; border-radius: 12px; padding: 6px 0 4px;
@@ -504,6 +505,21 @@ textarea.code { width: 100%; font: 12px/1.4 ui-monospace, Menlo, monospace; min-
   .chip-app.k-open { background: #17352a; color: #6fd3a0; }
   .chip-app.k-close { background: #3d1c1c; color: #ff8a80; }
   .chip-app.k-next { background: #3a2e17; color: #f3c56b; }
+}
+
+/* Applications: compact rows, tiles on wide screens */
+.apps-list .arow2 { flex-direction: column; gap: 6px; }
+.apps-list .abtns { flex-direction: row; flex-wrap: wrap; gap: 6px; }
+.apps-list .abtns .mini-btn { padding: 4px 9px; min-height: 28px; font-size: 12.5px; }
+@media (max-width: 420px) { .apps-list .abtns { gap: 5px; } .apps-list .abtns .mini-btn { padding: 4px 8px; font-size: 12px; } }
+.apps-list .achips, .apps-list .achecklist, .apps-list .afollow { margin-top: 4px; }
+.show-all { display: block; margin: 6px auto 2px; }
+.mini-btn.notion-mini { width: 28px; padding: 4px 0 !important; text-align: center; font-family: Georgia, serif; font-weight: 800; background: var(--ink); color: var(--bg) !important; }
+@media (min-width: 900px) {
+  .apps-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(290px, 1fr)); gap: 10px; padding: 4px 2px; }
+  .apps-grid .arow2 { border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; background: var(--bg); }
+  .apps-grid .arow2 + .arow2 { border-top: 1px solid var(--line); }
+  .apps-list .abtns { margin-top: auto; }
 }
 
 /* Application follow-ups */

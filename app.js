@@ -175,6 +175,7 @@ function normaliseCommitment(c) {
   n.notionUrl = cleanUrl(n.notionUrl);
   n.time = validTime(n.time); n.endTime = validTime(n.endTime);
   n.tbc = n.freq === 'once' && !n.date; // date to be confirmed
+  if (n.stage === 'IV') { n.stage = 'IT'; n.name = n.name.replace(/ · IV$/, ' · IT'); } // interview was IV briefly
   return n;
 }
 function normaliseItem(it) {
@@ -482,6 +483,10 @@ function highlightSection() {
   if (window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 4) current = links[links.length - 1].dataset.jump;
   links.forEach((l) => l.classList.toggle('on', l.dataset.jump === current));
 }
+document.addEventListener('toggle', (e) => {
+  const d = e.target;
+  if (d.dataset && d.dataset.fold) { if (d.open) appsExpanded.add(`open:${d.dataset.fold}`); else appsExpanded.delete(`open:${d.dataset.fold}`); }
+}, true);
 let scrollTick = false;
 window.addEventListener('scroll', () => {
   if (scrollTick) return;
@@ -843,6 +848,8 @@ const APPS_REFRESH_MS = 30 * 60e3;
 let appsLoading = false;
 let appsMonth = todayISO().slice(0, 7); // month shown in the Applications calendar (YYYY-MM)
 let appsDay = null;                     // day picked in that calendar
+const APPS_PREVIEW = 6;                 // roles shown per section before "Show all"
+const appsExpanded = new Set();         // sections showing everything (and folds left open)
 
 const APP_INACTIVE = /^(not applicable|rejected|withdrawn|n\/a)$/i;
 const APP_IN_PROGRESS = /submitted|applied|online test|video|interview|assessment|final|\bot\b|\bvi\b/i;
@@ -917,10 +924,12 @@ function appRowHtml(a) {
   const notion = a.notionUrl ? notionAppUrl(a.notionUrl) : '';
   const mats = a.materials || [];
   const ticked = new Set(a.materialsDone || []);
+  const followChips = followupsFor(a.id).map((c) => `<a class="fchip ${onceDone(c) ? 'on' : ''}" href="#/c/${c.id}">
+    ${onceDone(c) ? '✓ ' : ''}${escapeHtml(c.stage)} · ${c.date ? fmtDayShort(c.date) : 'TBC'}</a>`).join('');
   const checklist = mats.length ? `<div class="achecklist">
       ${mats.map((m) => `<button class="mchk ${ticked.has(m) ? 'on' : ''}" data-act="app-mat" data-id="${a.id}" data-m="${escapeHtml(m)}" aria-pressed="${ticked.has(m)}">
         <span class="mbox">${ticked.has(m) ? CHECK : ''}</span>${escapeHtml(m)}</button>`).join('')}
-      <span class="mprog">${mats.filter((m) => ticked.has(m)).length}/${mats.length}</span></div>` : '';
+      <span class="mprog">${mats.filter((m) => ticked.has(m)).length}/${mats.length}</span>${followChips}</div>` : (followChips ? `<div class="achecklist">${followChips}</div>` : '');
   return `
     <div class="arow2 ${urgent ? 'urgent' : ''} ${a.done ? 'is-done' : ''}">
       <div class="ctext">
@@ -933,17 +942,16 @@ function appRowHtml(a) {
         </div>
         ${dates ? `<div class="adates">${dates}</div>` : ''}
         ${checklist}
-        ${followupsFor(a.id).length ? `<div class="afollow">${followupsFor(a.id).map((c) => `<a class="fchip ${onceDone(c) ? 'on' : ''}" href="#/c/${c.id}">
-          ${onceDone(c) ? '✓ ' : ''}${escapeHtml(c.stage)} · ${c.date ? fmtDayShort(c.date) : 'TBC'}</a>`).join('')}</div>` : ''}
       </div>
       <div class="abtns">
+        ${a.url ? `<a class="mini-btn primary-mini" href="${escapeHtml(cleanUrl(a.url))}" target="_blank" rel="noopener">Apply ↗</a>` : ''}
         ${a.done ? '' : `<button class="mini-btn" data-act="app-followup" data-id="${a.id}">+ Follow-up</button>`}
         ${todayTaskFor(a.id)
           ? `<button class="mini-btn done-on" data-act="app-today" data-id="${a.id}" aria-pressed="true" title="Tap again to remove from today">✓ On today</button>`
           : (a.done ? '' : `<button class="mini-btn" data-act="app-today" data-id="${a.id}" aria-pressed="false">+ Today</button>`)}
-        <button class="mini-btn ${a.done ? 'done-on' : ''}" data-act="app-done" data-id="${a.id}" aria-pressed="${!!a.done}">${a.done ? '✓ Done' : 'Mark done'}</button>
-        ${a.url ? `<a class="mini-btn primary-mini" href="${escapeHtml(cleanUrl(a.url))}" target="_blank" rel="noopener">Apply ↗</a>` : ''}
-        ${notion ? `<a class="mini-btn" href="${escapeHtml(notion)}" ${notion === a.notionUrl ? 'target="_blank" rel="noopener"' : ''}>Notion</a>` : ''}
+        <button class="mini-btn ${a.done ? 'done-on' : ''}" data-act="app-done" data-id="${a.id}" aria-pressed="${!!a.done}">${a.done ? '✓ Done' : 'Done'}</button>
+
+        ${notion ? `<a class="mini-btn notion-mini" title="Open in Notion" aria-label="Open in Notion" href="${escapeHtml(notion)}" ${notion === a.notionUrl ? 'target="_blank" rel="noopener"' : ''}>N</a>` : ''}
       </div>
     </div>`;
 }
@@ -1025,17 +1033,22 @@ function appsTabHtml() {
   const rest = withPhase.filter((x) => x.phase === 'closed' || x.phase === 'inactive');
   const finished = withPhase.filter((x) => x.phase === 'done');
   const unknown = withPhase.filter((x) => x.phase === 'unknown').sort(by('close'));
-  const section = (title, list, hint = '') => (list.length ? `<section class="card"><div class="card-head"><h2>${title}</h2><span class="hint">${hint || list.length}</span></div>
-    ${list.map((x) => appRowHtml(x.a)).join('')}</section>` : '');
+  const grid = (key, list) => {
+    const all = appsExpanded.has(key) || list.length <= APPS_PREVIEW;
+    return `<div class="apps-grid">${(all ? list : list.slice(0, APPS_PREVIEW)).map((x) => appRowHtml(x.a)).join('')}</div>
+      ${list.length > APPS_PREVIEW ? `<button class="txt-btn show-all" data-act="apps-more" data-key="${key}">${all ? 'Show less' : `Show all (${list.length})`}</button>` : ''}`;
+  };
+  const section = (title, list, hint = '') => (list.length ? `<section class="card apps-list"><div class="card-head"><h2>${title}</h2><span class="hint">${hint || list.length}</span></div>
+    ${grid(title, list)}</section>` : '');
+  const fold = (title, list) => (list.length ? `<details class="card fold apps-list" ${appsExpanded.has(`open:${title}`) ? 'open' : ''} data-fold="${title}">
+    <summary>${title} (${list.length})</summary>${grid(title, list)}</details>` : '');
   return header + (warn ? `<section class="card">${warn}</section>` : '') +
     appsMonthHtml(appEvents()) +
     section('Closing soon', closingSoon, 'next 2 weeks') +
     section('In progress', progress) +
     section('Open now', openNow) +
     section('Opening soon', upcoming) +
-    (unknown.length ? `<details class="card fold"><summary>No opening date yet (${unknown.length})</summary>${unknown.map((x) => appRowHtml(x.a)).join('')}</details>` : '') +
-    (finished.length ? `<details class="card fold"><summary>Done (${finished.length})</summary>${finished.map((x) => appRowHtml(x.a)).join('')}</details>` : '') +
-    (rest.length ? `<details class="card fold"><summary>Closed or not applying (${rest.length})</summary>${rest.map((x) => appRowHtml(x.a)).join('')}</details>` : '');
+    fold('No opening date yet', unknown) + fold('Done', finished) + fold('Closed or not applying', rest);
 }
 
 // ---------- Application follow-ups (OT, HV, interviews…) ----------
@@ -1047,7 +1060,7 @@ const FOLLOWUP_STAGES = [
   ['HV', 'HireVue', 0.5, 'Video interview'],
   ['VI', 'Video interview', 0.5, 'Video interview'],
   ['PI', 'Phone interview', 0.5, ''],
-  ['IV', 'Interview', 1, ''],
+  ['IT', 'Interview', 1, ''],
   ['AC', 'Assessment centre', 4, ''],
   ['SD', 'Superday', 4, ''],
   ['GA', 'Game-based assessment', 0.5, 'Online test'],
@@ -2559,6 +2572,11 @@ document.addEventListener('click', (e) => {
   const periodItem = () => state.weeks[btn.dataset.wk]?.items[btn.dataset.id];
   switch (act) {
     case 'apps-refresh': refreshApps({ force: true }); break;
+    case 'apps-more': {
+      const k = btn.dataset.key;
+      if (appsExpanded.has(k)) appsExpanded.delete(k); else appsExpanded.add(k);
+      render(); break;
+    }
     case 'app-today': toggleAppToday(btn.dataset.id); break;
     case 'app-followup': openFollowupSheet(btn.dataset.id); break;
     case 'app-done': {
