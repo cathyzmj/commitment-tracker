@@ -238,6 +238,7 @@ function migrate(s) {
       lastSync: f.lastSync || null, lastError: f.lastError || null,
       decisions: obj(f.decisions), skipped: obj(f.skipped), pending: Array.isArray(f.pending) ? f.pending : [], ask: !!f.ask,
       allSchedule: !!f.allSchedule,
+      color: /^#[0-9a-f]{6}$/i.test(f.color || '') ? f.color : null,
     })),
   };
   for (const [key, w] of Object.entries(s.weeks)) {
@@ -254,7 +255,7 @@ function migrate(s) {
 
 // ---------- Weeks ----------
 // A week stores a snapshot of each commitment so past weeks keep the plan they had.
-const SNAPSHOT_FIELDS = ['name', 'section', 'freq', 'kind', 'target', 'unit', 'step', 'hours', 'order', 'date', 'time', 'endTime', 'schedule'];
+const SNAPSHOT_FIELDS = ['name', 'section', 'freq', 'kind', 'target', 'unit', 'step', 'hours', 'order', 'date', 'time', 'endTime', 'schedule', 'timeUnit'];
 function blankItem(c) {
   const it = { ticks: Array(7).fill(false), counts: Array(7).fill(0), mins: Array(7).fill(null), count: 0, done: false };
   for (const f of SNAPSHOT_FIELDS) it[f] = c[f];
@@ -367,6 +368,13 @@ const isSched = ([, it]) => !!it.schedule;
 const locationOf = (x) => ((x.notes || '').startsWith('📍') ? x.notes.split('\n')[0].replace('📍', '').trim() : '');
 // Week items don't carry notes, so look the location up on the commitment itself.
 const stageUrlById = (id) => { const c = state.commitments.find((x) => x.id === id); return (c && c.stageUrl) || ''; };
+// Colour of an event's calendar (manual one-offs use light green).
+function eventColor(id) {
+  const c = state.commitments.find((x) => x.id === id);
+  const i = c && c.source ? state.calendars.feeds.findIndex((f) => f.id === c.source.feed) : -1;
+  if (i < 0) return CAL_COLORS[3];
+  return state.calendars.feeds[i].color || CAL_COLORS[i % CAL_COLORS.length];
+}
 const locationById = (id) => { const c = state.commitments.find((x) => x.id === id); return c ? locationOf(c) : ''; };
 const onceSortKey = (x) => `${x.date || ''} ${x.time || '  :  '}`;
 function groupBySection(entries, getSection = (e) => e[1].section) {
@@ -380,12 +388,14 @@ function groupBySection(entries, getSection = (e) => e[1].section) {
 }
 
 // Short descriptions such as "3 emails/day", "15h/week", "1h".
+// Planned time is stored in hours; timeUnit 'min' just shows it in minutes (e.g. 45m).
+const fmtPlan = (x) => (x.timeUnit === 'min' ? `${Math.round((x.hours || 0) * 60)}m` : fmtH(x.hours || 0));
 function targetLabel(x) {
   const per = x.freq === 'daily' ? '/day' : x.freq === 'weekly' ? '/week' : '';
   if (x.kind === 'counter') {
-    return isHourUnit(x.unit) ? `${round2(x.target)}h${per}` : `${round2(x.target)} ${x.unit || ''}`.trim() + per + (x.hours ? ` · ≈${fmtH(x.hours)}` : '');
+    return isHourUnit(x.unit) ? `${round2(x.target)}h${per}` : `${round2(x.target)} ${x.unit || ''}`.trim() + per + (x.hours ? ` · ≈${fmtPlan(x)}` : '');
   }
-  return `${fmtH(x.hours)}${per}`;
+  return `${fmtPlan(x)}${per}`;
 }
 function countLabel(it, n) {
   return isHourUnit(it.unit) ? `${round2(n)} of ${fmtH(it.target)}` : `${round2(n)}/${round2(it.target)} ${it.unit || ''}`.trim();
@@ -401,7 +411,7 @@ function parseHash() {
   if (a === 'sync') return { tab: 'commitments', page: 'sync' };
   if (a === 'calendar') return { tab: 'commitments', page: b === 'review' ? 'review' : 'calendar' };
   if (a === 'new') return { tab: 'commitments', id: 'new', edit: true, freq: FREQS.includes(b) ? b : 'daily' };
-  return { tab: ['today', 'week', 'cal', 'commitments'].includes(a) ? a : 'cal' };
+  return { tab: ['today', 'week', 'cal', 'commitments'].includes(a) ? a : 'today' };
 }
 let route = parseHash();
 window.addEventListener('hashchange', () => {
@@ -414,7 +424,7 @@ window.addEventListener('hashchange', () => {
   render();
   window.scrollTo(0, 0);
 });
-function goBack(fallback = '#/cal') {
+function goBack(fallback = '#/today') {
   if (history.length > 1) history.back(); else location.hash = fallback;
 }
 
@@ -444,7 +454,7 @@ function render() {
 // ---------- Side navigation (wide screens, e.g. the Mac app) ----------
 // The main pages, plus the current page's sections as jump links (highlighted while scrolling).
 // Phones keep the bottom tab bar instead (CSS switches at 900px).
-const NAV_PAGES = [['cal', 'Calendar'], ['today', 'Today'], ['week', 'Week'], ['apps', 'Applications'], ['commitments', 'Commitments']];
+const NAV_PAGES = [['today', 'Today'], ['cal', 'Calendar'], ['week', 'Week'], ['apps', 'Applications'], ['commitments', 'Commitments']];
 function sideNavHtml() {
   const extra = [['#/calendar', 'Calendars'], ['#/sync', `Sync${state.sync.enabled ? ' · on' : ''}`], ['#/widget', 'Phone widget']];
   return `<aside class="sidenav" aria-label="Navigation">
@@ -498,7 +508,7 @@ window.addEventListener('scroll', () => {
 
 function tabBarHtml() {
   const tab = (t, label) => `<a href="#/${t}" class="${route.tab === t ? 'on' : ''}" ${route.tab === t && !route.id ? 'aria-current="page"' : ''}>${ICONS[t]}<span>${label}</span></a>`;
-  return `<nav class="tabbar">${tab('cal', 'Calendar')}${tab('today', 'Today')}${tab('week', 'Week')}${tab('apps', 'Applications')}${tab('commitments', 'Commitments')}</nav>`;
+  return `<nav class="tabbar">${tab('today', 'Today')}${tab('cal', 'Calendar')}${tab('week', 'Week')}${tab('apps', 'Applications')}${tab('commitments', 'Commitments')}</nav>`;
 }
 
 function topBar({ left = '', label = '', title = '', right = '', titleAct = '' }) {
@@ -539,7 +549,7 @@ function dayHeadHtml(wk) {
 function periodRowHtml(wk, id, it, { showDate = false } = {}) {
   const done = periodDone(it);
   const sub = [showDate && it.date ? fmtShort(it.date) : '', timeRange(it),
-    it.kind === 'counter' ? countLabel(it, it.count) : fmtH(it.hours)].filter(Boolean).join(' · ');
+    it.kind === 'counter' ? countLabel(it, it.count) : fmtPlan(it)].filter(Boolean).join(' · ');
   const pct = it.kind === 'counter' ? (it.target ? Math.min(100, (it.count / it.target) * 100) : it.count > 0 ? 100 : 0) : 0;
   const check = it.kind === 'task'
     ? `<button class="chk ${done ? 'on' : ''}" data-act="pdone" data-wk="${wk}" data-id="${id}" aria-pressed="${done}" aria-label="${escapeHtml(it.name)} done">${done ? CHECK : ''}</button>`
@@ -779,13 +789,19 @@ function calendarTabHtml() {
       <span>${DAY_NAMES[i][0]}</span><b>${parseISO(d).getDate()}</b><i class="${n ? 'dot' : ''}"></i></button>`;
   }).join('');
 
+  // Daily commitments as tick-able brackets: highlighted until done, faded and crossed out once
+  // the day has passed without them.
   const dailyChip = (d, i) => {
     if (!w) return '';
-    const s = dayStats(w, i);
-    const dailyTotal = itemsOf(w, 'daily').length;
-    if (!dailyTotal) return '';
-    const done = itemsOf(w, 'daily').filter(([, it]) => dayDone(it, i)).length;
-    return `<a class="chip-daily ${done === dailyTotal ? 'all' : ''}" href="#/${d === today ? 'today' : 'week'}">Daily ${done}/${dailyTotal}</a>`;
+    const list = itemsOf(w, 'daily');
+    if (!list.length) return '';
+    return `<div class="dpills">${list.map(([id, it]) => {
+      const done = dayDone(it, i);
+      const st = done ? 'done' : d < today ? 'missed' : 'pending';
+      const prog = it.kind === 'counter' ? `<small>${round2(it.counts[i])}/${round2(it.target)}</small>` : '';
+      return `<button class="dpill ${st}" data-cell="${wk}:${id}:${i}" aria-label="${escapeHtml(cellLabel(it, i))}">
+        <span class="dbox">${done ? CHECK : ''}</span><span class="dname">${escapeHtml(it.name)}</span>${prog}</button>`;
+    }).join('')}</div>`;
   };
 
   const cols = days.map((d, i) => {
@@ -797,7 +813,7 @@ function calendarTabHtml() {
       const where = locationById(e.id);
       const tip = `${e.it.name} · ${fmtTime(e.start)}–${fmtTime(e.end)}${where ? ' · ' + where : ''}`;
       return `<div class="cev ${sched ? 'sched' : ''} ${done ? 'done' : ''} ${height < 40 ? 'short' : ''}" data-open="#/c/${e.id}" title="${escapeHtml(tip)}"
-          style="top:${top}px;height:${height}px;left:calc(${(e.lane / e.lanes) * 100}% + 2px);width:calc(${100 / e.lanes}% - 4px)">
+          style="--ev:${eventColor(e.id)};top:${top}px;height:${height}px;left:calc(${(e.lane / e.lanes) * 100}% + 2px);width:calc(${100 / e.lanes}% - 4px)">
         ${sched ? '' : `<button class="cev-chk" data-act="pdone" data-wk="${wk}" data-id="${e.id}" aria-label="${escapeHtml(e.it.name)} done" aria-pressed="${done}">${done ? CHECK : ''}</button>`}
         <div class="cev-body"><b>${escapeHtml(e.it.name)}</b></div>
       </div>`;
@@ -1388,7 +1404,7 @@ function editPageHtml() {
     </header>
     <datalist id="sections">${sectionNames().map((s) => `<option value="${escapeHtml(s)}">`).join('')}</datalist>
     <form id="cform" class="card form" data-form="commitment" data-id="${isNew ? '' : c.id}"
-      data-freq="${c.freq}" data-kind="${c.kind}" data-hourunit="${isHourUnit(c.unit)}" data-tbc="${!!c.tbc}">
+      data-freq="${c.freq}" data-kind="${c.kind}" data-hourunit="${isHourUnit(c.unit)}" data-tbc="${!!c.tbc}" data-unit="${c.timeUnit === 'min' ? 'min' : 'h'}">
       <label class="f">Name<input name="name" required value="${escapeHtml(c.name)}" placeholder="e.g. Practice questions"></label>
       <label class="f">Section<input name="section" list="sections" value="${escapeHtml(c.section === 'Other' && isNew ? '' : c.section)}" placeholder="e.g. Career prep"></label>
       <div class="f">How often<div class="seg">${radio('freq', 'daily', 'Daily', c.freq)}${radio('freq', 'weekly', 'Weekly', c.freq)}${radio('freq', 'once', 'One-off', c.freq)}</div></div>
@@ -1408,8 +1424,11 @@ function editPageHtml() {
         <label class="f">Unit<input name="unit" value="${escapeHtml(c.unit)}" placeholder="emails / h"></label>
         <label class="f">Step<input name="step" type="number" inputmode="decimal" min="0" step="any" value="${round2(c.step)}"></label>
       </div>
-      <label class="f only-time"><span>Planned time (hours <span class="per-day">per day</span><span class="per-week">per week</span><span class="per-once">total</span>)</span>
-        <input name="hours" type="number" inputmode="decimal" min="0" step="0.25" value="${round2(c.hours)}"></label>
+      <div class="f only-time"><span>Planned time <span class="per-day">per day</span><span class="per-week">per week</span><span class="per-once">in total</span></span>
+        <div class="time-row">
+          <input name="hours" type="number" inputmode="decimal" min="0" step="${c.timeUnit === 'min' ? 5 : 0.25}" value="${c.timeUnit === 'min' ? Math.round(c.hours * 60) : round2(c.hours)}" aria-label="Planned time">
+          <div class="seg">${radio('timeUnit', 'min', 'minutes', c.timeUnit === 'min' ? 'min' : 'h')}${radio('timeUnit', 'h', 'hours', c.timeUnit === 'min' ? 'min' : 'h')}</div>
+        </div></div>
       <label class="f">What to do<textarea name="notes" rows="5" placeholder="Steps, chapter you're on, checklist…">${escapeHtml(c.notes)}</textarea></label>
       ${c.stage ? `<label class="f">Test / interview link<input name="stageUrl" inputmode="url" autocapitalize="off" autocorrect="off" value="${escapeHtml(c.stageUrl || '')}" placeholder="HireVue invite, test portal, Zoom…"></label>` : ''}
       <label class="f">Notion page<input name="notionUrl" inputmode="url" autocapitalize="off" autocorrect="off" value="${escapeHtml(c.notionUrl)}" placeholder="https://www.notion.so/…"></label>
@@ -1439,7 +1458,8 @@ function saveCommitmentForm(form) {
     time: freq === 'once' && f.get('tbc') !== 'on' ? validTime(f.get('time')) : null,
     endTime: freq === 'once' && f.get('tbc') !== 'on' ? validTime(f.get('endTime')) : null,
     step: kind === 'counter' ? num(f.get('step'), 0) || (isHourUnit(unit) ? 0.5 : 1) : 1,
-    hours: kind === 'counter' && isHourUnit(unit) ? target : num(f.get('hours')),
+    timeUnit: f.get('timeUnit') === 'min' ? 'min' : 'h',
+    hours: kind === 'counter' && isHourUnit(unit) ? target : (f.get('timeUnit') === 'min' ? num(f.get('hours')) / 60 : num(f.get('hours'))),
     notes: String(f.get('notes') || '').trim(),
     notionUrl: cleanUrl(f.get('notionUrl')),
     ...(f.has('stageUrl') ? { stageUrl: cleanUrl(f.get('stageUrl')) } : {}),
@@ -1643,6 +1663,7 @@ function addFeed(form) {
     section: String(f.get('section') || '').trim() || 'Calendar',
     lastSync: null, lastError: null, decisions: {}, skipped: {}, pending: [], ask: false,
     allSchedule: f.get('allSchedule') === 'on',
+    color: CAL_COLORS[state.calendars.feeds.length % CAL_COLORS.length],
   };
   state.calendars.feeds.push(feed);
   save();
@@ -1766,6 +1787,10 @@ function calendarPageHtml() {
         <button class="btn" data-act="cal-sync" data-feed="${f.id}">Sync now</button>
         ${f.pending.length ? `<a class="btn primary" href="#/calendar/review">Review ${f.pending.length} new</a>` : ''}
       </div>
+      <div class="swatches" role="radiogroup" aria-label="Calendar colour">${CAL_COLORS.map((c, i) => {
+        const cur = f.color || CAL_COLORS[state.calendars.feeds.indexOf(f) % CAL_COLORS.length];
+        return `<button class="swatch ${c === cur ? 'on' : ''}" style="--sw:${c}" data-act="cal-color" data-feed="${f.id}" data-color="${c}" aria-label="Colour ${i + 1}" aria-pressed="${c === cur}"></button>`;
+      }).join('')}</div>
       <label class="toggle-row"><input type="checkbox" data-act="cal-allsched" data-feed="${f.id}" ${f.allSchedule ? 'checked' : ''}>
         <span>This is my timetable<small>All its events show as schedule (not one-off tasks): on the calendar and in Today's schedule, and not counted in your hours.</small></span></label>
       <label class="toggle-row"><input type="checkbox" data-act="cal-ask" data-feed="${f.id}" ${f.ask ? 'checked' : ''}>
@@ -2013,7 +2038,9 @@ function widgetPageHtml() {
 const SYNC_DEBOUNCE_MS = 2000;
 const SYNC_POLL_MS = 120000; // data sync check while the app sits open (changes still sync ~2s after you make them)
 const PROGRESS_FIELDS = ['ticks', 'counts', 'mins', 'count', 'done'];
-const FEED_FIELDS = ['id', 'name', 'url', 'section', 'decisions', 'skipped', 'ask', 'allSchedule'];
+const FEED_FIELDS = ['id', 'name', 'url', 'section', 'decisions', 'skipped', 'ask', 'allSchedule', 'color'];
+// Calendar colours (the theme's light blue, salmon, gold and light green, plus a few more).
+const CAL_COLORS = ['#add8e6', '#fa8072', '#ffd700', '#90ee90', '#c7b8f5', '#f7a8c8', '#9fe3d6', '#c9c9c9'];
 const RECORD_ORDER = { c: 0, f: 1, ws: 2, wp: 3 };
 let recordHashes = null; // record key -> JSON of the record as last stamped or received
 let syncTimer = null;
@@ -2676,6 +2703,11 @@ document.addEventListener('click', (e) => {
     case 'cal-sync': syncAll({ force: true, feedId: btn.dataset.feed }); break;
     case 'cal-remove': removeFeed(btn.dataset.feed); break;
     case 'cal-decide': setDecision(btn.dataset.feed, btn.dataset.uid, btn.dataset.d); break;
+    case 'cal-color': {
+      const feed = state.calendars.feeds.find((f) => f.id === btn.dataset.feed);
+      if (feed && CAL_COLORS.includes(btn.dataset.color)) { feed.color = btn.dataset.color; save(); render(); }
+      break;
+    }
     case 'cal-allsched': {
       const feed = state.calendars.feeds.find((f) => f.id === btn.dataset.feed);
       if (!feed) break;
@@ -2708,6 +2740,14 @@ function syncFollowupForm(form) {
 }
 function syncFormVisibility(form) {
   const fd = new FormData(form);
+  // Switching minutes/hours converts the number already typed.
+  const unit = fd.get('timeUnit');
+  if (unit && form.dataset.unit && form.dataset.unit !== unit && form.hours) {
+    const v = num(form.hours.value);
+    form.hours.value = unit === 'min' ? Math.round(v * 60) : round2(v / 60);
+    form.hours.step = unit === 'min' ? 5 : 0.25;
+  }
+  if (unit) form.dataset.unit = unit;
   form.dataset.freq = fd.get('freq');
   form.dataset.kind = fd.get('kind');
   form.dataset.hourunit = String(isHourUnit(fd.get('unit')));

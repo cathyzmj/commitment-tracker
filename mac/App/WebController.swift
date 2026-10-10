@@ -47,7 +47,7 @@ final class WebController: NSObject, ObservableObject {
         webView.navigationDelegate = self
         webView.uiDelegate = self
         webView.allowsBackForwardNavigationGestures = true
-        webView.load(URLRequest(url: URL(string: "#/cal", relativeTo: Self.home)!))
+        webView.load(URLRequest(url: URL(string: "#/today", relativeTo: Self.home)!))
     }
 
     /// commitments://today, commitments://week, commitments://cal, commitments://commitments
