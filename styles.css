@@ -802,3 +802,9 @@ button.dbox { padding: 0; cursor: pointer; color: var(--fill-ink); }
 .kmap.rows .kn.branch .klabel { font-size: 13px; }
 .kmap.rows .kn.leaf text { font-size: 13.5px; }
 .kmap .kcount { font-weight: 500; fill: var(--muted); }
+.kstep { display: flex; flex-direction: column; gap: 6px; padding: 12px 0 4px; border-top: 1px solid var(--line); }
+.kstep b { font-size: 15px; }
+.kstep .btn { align-self: flex-start; }
+.kr-track.thin, .kr-fill.thin { stroke-width: 2.4; }
+.kn.leaf.cov .kdotc { fill: rgba(255, 255, 255, 0.95); stroke: none; }
+.kn.leaf.cov.lit .kdotc { fill: #ffd34d; }

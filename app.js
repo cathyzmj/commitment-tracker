@@ -1503,13 +1503,64 @@ function parseOutline(text) {
   }
   return root;
 }
-const outlineOf = (nodes, depth = 0) => nodes.map((n) => `${'  '.repeat(depth)}${n.t}\n${outlineOf(n.k, depth + 1)}`).join('');
+const outlineOf = (nodes, depth = 0) => nodes.map((n) =>
+  `${'  '.repeat(depth)}${n.t}${n.refs && n.refs.length ? ` | ${n.refs.join(', ')}` : ''}\n${outlineOf(n.k, depth + 1)}`).join('');
 const treeLeaves = (nodes) => nodes.flatMap((n) => (n.k.length ? treeLeaves(n.k) : [n]));
+// A map skill that covers course topics counts as its topics (e.g. 2 of 3 lit); anything else counts as one.
+const leafStat = (n) => (n.cov ? n.cov : { lit: n.lit ? 1 : 0, total: 1 });
 function treeProgress(nodes) {
   const leaves = treeLeaves(nodes);
-  const lit = leaves.filter((n) => n.lit).length;
+  let lit = 0, total = 0;
+  for (const n of leaves) { const st = leafStat(n); lit += st.lit; total += st.total; }
   const weekAgo = addDaysISO(todayISO(), -6);
-  return { lit, total: leaves.length, pct: leaves.length ? lit / leaves.length : 0, week: leaves.filter((n) => n.lit && n.at >= weekAgo).length };
+  return { lit, total, pct: total ? lit / total : 0, week: leaves.filter((n) => n.lit && n.at >= weekAgo).length };
+}
+
+// ---------- Simplified map ----------
+// Separate from the course list: a compact outline of the core skills (e.g. 8–25 nodes). A skill line
+// can end with " | topic, topic" naming the course topics it covers; it then lights up as those are ticked.
+function parseMapOutline(text) {
+  const nodes = parseOutline(text);
+  const split = (ns) => ns.forEach((n) => {
+    const i = n.t.indexOf('|');
+    if (i >= 0) { n.refs = n.t.slice(i + 1).split(/[,;]/).map((r) => r.trim()).filter(Boolean).slice(0, 30); n.t = n.t.slice(0, i).trim() || 'Skill'; }
+    split(n.k);
+  });
+  split(nodes);
+  return nodes;
+}
+// Course topics a reference points at: the leaves under the matching course node (exact title first, then prefix).
+function resolveRefs(course, refs) {
+  const all = [];
+  const walk = (ns) => ns.forEach((n) => { all.push(n); walk(n.k); });
+  walk(course);
+  const leaves = new Map(), missing = [];
+  for (const r of refs || []) {
+    const q = r.toLowerCase();
+    const hit = all.find((n) => n.t.toLowerCase() === q) || all.find((n) => n.t.toLowerCase().startsWith(q)) || all.find((n) => n.t.toLowerCase().includes(q));
+    if (!hit) { missing.push(r); continue; }
+    for (const l of hit.k.length ? treeLeaves(hit.k) : [hit]) leaves.set(l.id, l);
+  }
+  return { leaves: [...leaves.values()], missing };
+}
+// The map as displayed: a copy where covering skills carry their course progress.
+function deriveMap(course, map) {
+  const missing = [];
+  const copy = (ns) => ns.map((n) => {
+    const d = { ...n, k: copy(n.k) };
+    if (!n.k.length && n.refs && n.refs.length) {
+      const r = resolveRefs(course, n.refs);
+      missing.push(...r.missing);
+      if (r.leaves.length) {
+        const lit = r.leaves.filter((l) => l.lit).length;
+        d.cov = { lit, total: r.leaves.length };
+        d.cover = r.leaves.map((l) => l.id);
+        d.lit = lit === r.leaves.length;
+      }
+    }
+    return d;
+  });
+  return { nodes: copy(map || []), missing };
 }
 function findNode(nodes, id) {
   for (const n of nodes) { if (n.id === id) return n; const f = findNode(n.k, id); if (f) return f; }
@@ -1527,10 +1578,11 @@ function carryLit(fresh, old) {
 function normaliseNodes(ns, depth = 0) {
   if (!Array.isArray(ns) || depth > 8) return [];
   return ns.filter((n) => n && n.t).map((n) => ({ id: String(n.id || uid()), t: String(n.t).slice(0, 140), k: normaliseNodes(n.k, depth + 1),
+    ...(Array.isArray(n.refs) && n.refs.length ? { refs: n.refs.map(String).slice(0, 30) } : {}),
     ...(n.lit ? { lit: true, at: /^\d{4}-\d{2}-\d{2}$/.test(n.at || '') ? n.at : todayISO() } : {}) }));
 }
 const normaliseTree = (t) => ({ id: String(t.id || uid()), name: String(t.name || 'Knowledge tree'), source: String(t.source || ''),
-  commitmentId: t.commitmentId || null, created: t.created || todayISO(), nodes: normaliseNodes(t.nodes) });
+  commitmentId: t.commitmentId || null, created: t.created || todayISO(), nodes: normaliseNodes(t.nodes), map: normaliseNodes(t.map) });
 
 // Knowledge map: the tree drawn left to right as dots joined by curves. Tap a topic to light it;
 // tap a branch dot to fold or unfold it. Lit topics glow and light the links leading to them.
@@ -1539,6 +1591,13 @@ let treeView = 'map';       // 'map' or 'list'
 const K_ROW = 30, K_COL = 132, K_PAD = 18;
 const clip = (t, n) => (t.length > n ? `${t.slice(0, n - 1)}…` : t);
 const narrowMap = () => window.innerWidth < 640;
+function leafDot(n) {
+  const glow = n.lit ? '<circle class="kglow" r="11"/>' : '';
+  if (!n.cov) return `${glow}<circle class="kdotc" r="6"/>`;
+  const c = 2 * Math.PI * 7;
+  return `${glow}<circle class="kdotc" r="5"/><circle class="kr-track thin" r="7"/><circle class="kr-fill thin" r="7" stroke-dasharray="${((n.cov.lit / n.cov.total) * c).toFixed(1)} ${c.toFixed(1)}" transform="rotate(-90)"/>`;
+}
+const leafAct = (tree, n) => `data-act="${n.cover ? 'tree-cover' : 'tree-lit'}" data-tree="${tree.id}" data-node="${n.id}" ${tree.isMap ? 'data-map="1"' : ''} role="button" tabindex="0" aria-pressed="${!!n.lit}"`;
 function treeSvg(tree, nodes, { interactive = true, narrow = narrowMap() } = {}) {
   if (narrow) return treeRowsSvg(tree, nodes, { interactive });
   const items = [];   // { n, depth, y, x, leaf, p }
@@ -1572,9 +1631,9 @@ function treeSvg(tree, nodes, { interactive = true, narrow = narrowMap() } = {})
   const nodeSvg = (it) => {
     const t = escapeHtml(it.n.t);
     if (it.leaf) {
-      return `<g class="kn leaf ${it.n.lit ? 'lit' : ''}" transform="translate(${it.x},${it.y})" ${interactive ? `data-act="tree-lit" data-tree="${tree.id}" data-node="${it.n.id}" role="button" tabindex="0" aria-pressed="${!!it.n.lit}"` : ''}>
-        <title>${t}</title><rect class="khit" x="-10" y="-13" width="${Math.min(it.n.t.length, 34) * 6.6 + 30}" height="26" rx="8"/>
-        ${it.n.lit ? '<circle class="kglow" r="11"/>' : ''}<circle class="kdotc" r="6"/><text x="13" y="4">${escapeHtml(clip(it.n.t, 34))}</text></g>`;
+      return `<g class="kn leaf ${it.n.lit ? 'lit' : ''} ${it.n.cov ? 'cov' : ''}" transform="translate(${it.x},${it.y})" ${interactive ? leafAct(tree, it.n) : ''}>
+        <title>${t}${it.n.cov ? ` · ${it.n.cov.lit}/${it.n.cov.total} course topics` : ''}</title><rect class="khit" x="-10" y="-13" width="${Math.min(it.n.t.length, 34) * 6.6 + 30}" height="26" rx="8"/>
+        ${leafDot(it.n)}<text x="13" y="4">${escapeHtml(clip(it.n.t, 34))}</text></g>`;
     }
     const big = it.root ? 13 : 9;
     const done = it.p.lit === it.p.total;
@@ -1617,9 +1676,9 @@ function treeRowsSvg(tree, nodes, { interactive }) {
   const node = (it) => {
     const t = escapeHtml(it.n.t);
     if (it.leaf) {
-      return `<g class="kn leaf ${it.n.lit ? 'lit' : ''}" transform="translate(${it.x},${it.y})" ${interactive ? `data-act="tree-lit" data-tree="${tree.id}" data-node="${it.n.id}" role="button" tabindex="0" aria-pressed="${!!it.n.lit}"` : ''}>
+      return `<g class="kn leaf ${it.n.lit ? 'lit' : ''} ${it.n.cov ? 'cov' : ''}" transform="translate(${it.x},${it.y})" ${interactive ? leafAct(tree, it.n) : ''}>
         <title>${t}</title><rect class="khit" x="-12" y="-15" width="1000" height="30" rx="8"/>
-        ${it.n.lit ? '<circle class="kglow" r="11"/>' : ''}<circle class="kdotc" r="6"/><text x="14" y="4.5">${escapeHtml(clip(it.n.t, room(it)))}</text></g>`;
+        ${leafDot(it.n)}<text x="14" y="4.5">${escapeHtml(clip(it.n.t, room(it, it.n.cov ? 30 : 0)))}${it.n.cov ? ` <tspan class="kcount">${it.n.cov.lit}/${it.n.cov.total}</tspan>` : ''}</text></g>`;
     }
     const big = it.root ? 11 : 8, done = it.p.lit === it.p.total;
     return `<g class="kn branch ${done ? 'lit' : ''} ${it.folded ? 'folded' : ''} ${it.root ? 'root' : ''}" transform="translate(${it.x},${it.y})"
@@ -1640,7 +1699,11 @@ window.addEventListener('resize', () => {
   lastNarrow = narrowMap();
   if (route.page === 'knowledge' && !typing()) render();
 });
-function treeBodyHtml(t) { return treeView === 'map' ? treeSvg(t, t.nodes) : treeNodesHtml(t, t.nodes); }
+function treeBodyHtml(t) {
+  if (treeView === 'list' && t.nodes.length) return treeNodesHtml(t, t.nodes);
+  if (!t.map.length) return treeSvg(t, t.nodes) + `<p class="help center">This map shows the full course list. <a href="#/knowledge/${t.id}/edit">Add a simplified map</a> to see just the core skills.</p>`;
+  return treeSvg({ ...t, isMap: true }, deriveMap(t.nodes, t.map).nodes);
+}
 const treeOpen = new Set(); // list view: branches folded open this session (top level starts open)
 function treeNodesHtml(tree, nodes, depth = 0) {
   return `<ul class="ktree">${nodes.map((n) => {
@@ -1655,12 +1718,13 @@ function treeNodesHtml(tree, nodes, depth = 0) {
       ${treeNodesHtml(tree, n.k, depth + 1)}</details></li>`;
   }).join('')}</ul>`;
 }
+const treeMain = (t) => (t.nodes.length ? t.nodes : deriveMap(t.nodes, t.map).nodes);
 function treeCardHtml(t) {
-  const p = treeProgress(t.nodes);
+  const p = treeProgress(treeMain(t));
   const c = t.commitmentId && state.commitments.find((x) => x.id === t.commitmentId);
   return `<section class="card ktree-card" data-section="${escapeHtml(t.name)}">
     <div class="card-head"><h2>${escapeHtml(t.name)}</h2><a class="txt-btn" href="#/knowledge/${t.id}/edit">Edit</a></div>
-    <div class="kprog"><b>${Math.round(p.pct * 100)}%</b><span>lit · ${p.lit} of ${p.total} topics${p.week ? ` · <em>+${p.week} this week</em>` : ''}</span></div>
+    <div class="kprog"><b>${Math.round(p.pct * 100)}%</b><span>${t.map.length && t.nodes.length ? 'of the course' : 'lit'} · ${p.lit} of ${p.total} topics${p.week ? ` · <em>+${p.week} this week</em>` : ''}</span></div>
     <div class="hbar"><i style="width:${p.pct * 100}%"></i></div>
     ${c || t.source ? `<p class="small muted pad">${c ? `Routine: <a href="#/c/${c.id}">${escapeHtml(c.name)}</a>` : ''}${c && t.source ? ' · ' : ''}${t.source ? linkify(escapeHtml(t.source)) : ''}</p>` : ''}
     ${treeBodyHtml(t)}
@@ -1678,38 +1742,60 @@ function knowledgePageHtml() {
         <a class="btn primary" href="#/knowledge/new">Make a knowledge tree</a>
       </section>`}`;
 }
-let treeDraft = null; // outline preview while editing
+let treeDraft = null; // { outline, map } while editing
 function treePrompt(name, source) {
-  return `Draft a knowledge tree for: ${name || '<subject or course>'}
+  return `Draft the course list for: ${name || '<subject or course>'}
 Source: ${source || '<course page link, syllabus, or what I am teaching myself>'}
 
-Read the source and list everything it covers, in the order it is taught.
+Read the source and list everything it covers, in the order it is taught. Keep the course's own section and lesson names.
 Reply with only an indented outline: two spaces per level, one topic per line, at most 4 levels.
-The lowest level should be topics small enough to learn in one sitting (30–90 minutes).
 No numbering, no bullets, no commentary.`;
+}
+function mapPrompt(name, outline) {
+  return `Here is the full course list for "${name || 'my course'}":
+
+${outline.trim() || '<paste the course list here>'}
+
+Turn it into a compact skill map: the core skills I am really building, not the course's lesson structure.
+- At most 3 levels and 8 to 25 lines in total. Merge lessons that train the same skill; leave out admin, intros and recaps.
+- On each lowest-level line, after " | ", list the course topics it covers, copied exactly from the list above, separated by commas.
+Reply with only the indented outline (two spaces per level). Example line:  DCF | Unlevered free cash flow, WACC, Terminal value`;
+}
+function treePreviewHtml(name, outline, mapText) {
+  const course = parseOutline(outline);
+  const map = parseMapOutline(mapText);
+  const d = deriveMap(course, map);
+  const missing = [...new Set(d.missing)];
+  return `<span>Preview · ${treeLeaves(course).length} course topics · ${map.length ? `${treeLeaves(map).length} map skills` : 'no map yet'}</span>
+    ${missing.length ? `<span class="help err">Not found in the course list: ${escapeHtml(missing.slice(0, 6).join(', '))}${missing.length > 6 ? '…' : ''}</span>` : ''}
+    <div class="tpreview">${map.length ? treeSvg({ id: 'preview', name: name || 'Preview', isMap: true }, d.nodes, { interactive: false })
+      : course.length ? treeSvg({ id: 'preview', name: name || 'Preview' }, course, { interactive: false }) : '<p class="muted small">Nothing yet.</p>'}</div>`;
 }
 function treeEditHtml() {
   const isNew = route.treeId === 'new';
   const t = isNew ? normaliseTree({ name: '', nodes: [] }) : state.trees.find((x) => x.id === route.treeId);
   if (!t) return knowledgePageHtml();
-  const outline = treeDraft != null ? treeDraft : outlineOf(t.nodes);
-  const preview = parseOutline(outline);
-  const p = treeProgress(preview);
+  const outline = treeDraft ? treeDraft.outline : outlineOf(t.nodes);
+  const mapText = treeDraft ? treeDraft.map : outlineOf(t.map);
   return `
     <header class="top">${topBar({ left: '<button class="txt-btn" data-act="back">Cancel</button>', title: isNew ? 'New knowledge tree' : 'Edit tree',
       right: '<button class="txt-btn strong" type="submit" form="tform">Save</button>' })}</header>
     <form id="tform" class="card form" data-form="tree" data-id="${isNew ? '' : t.id}">
       <label class="f">Name<input name="name" required value="${escapeHtml(t.name)}" placeholder="e.g. Felix technicals"></label>
       <label class="f">What it covers<input name="source" value="${escapeHtml(t.source)}" placeholder="Course page link, or e.g. “self-study: VC fund basics”"></label>
-      <label class="f">Linked routine<span class="help">Its page shows how much of the tree is lit.</span>${routineSelect('commitmentId', t.commitmentId)}</label>
-      <div class="f"><span>1. Get a draft</span>
-        <span class="help">Copy this prompt into Claude (with the course page open or linked), then check the outline it gives you.</span>
-        <button type="button" class="btn" data-act="tree-prompt">Copy prompt for Claude</button></div>
-      <label class="f"><span>2. Paste and check the outline</span>
-        <span class="help">One topic per line; indent with two spaces to put a topic under the one above.</span>
-        <textarea name="outline" class="code" rows="12" placeholder="Accounting&#10;  Three statements&#10;    Income statement&#10;    Balance sheet">${escapeHtml(outline)}</textarea></label>
-      <div class="f"><span>Preview · ${p.total} topics${!isNew && p.lit ? ` · ${p.lit} still lit` : ''}</span>
-        <div class="tpreview">${preview.length ? treeSvg({ id: 'preview', name: t.name || 'Preview' }, preview, { interactive: false }) : '<p class="muted small">Nothing yet.</p>'}</div></div>
+      <label class="f">Linked routine<span class="help">Its page shows how much of the course is done.</span>${routineSelect('commitmentId', t.commitmentId)}</label>
+
+      <div class="kstep"><b>1 · Course list</b><span class="help">The full, detailed structure from the course website. You tick these in List view.</span>
+        <button type="button" class="btn" data-act="tree-prompt">Copy prompt for Claude</button>
+        <span class="help">Paste it into Claude with the course page link (or the page open), then paste the outline back here.</span>
+        <textarea name="outline" class="code" rows="10" placeholder="Accounting&#10;  Three statements&#10;    Income statement&#10;    Balance sheet">${escapeHtml(outline)}</textarea></div>
+
+      <div class="kstep"><b>2 · Map (simplified)</b><span class="help">A short picture of the core skills, separate from the course structure. Optional.</span>
+        <button type="button" class="btn" data-act="map-prompt">Copy prompt for Claude</button>
+        <span class="help">The prompt includes your course list. A line can end with “ | topic, topic” to light up from those course topics; without it you tap the skill yourself.</span>
+        <textarea name="mapOutline" class="code" rows="8" placeholder="Valuation&#10;  DCF | Unlevered free cash flow, WACC, Terminal value&#10;  Comps | Trading comps, Precedent transactions">${escapeHtml(mapText)}</textarea></div>
+
+      <div class="f tpreview-wrap">${treePreviewHtml(t.name, outline, mapText)}</div>
       <button class="btn primary" type="submit">${isNew ? 'Import tree' : 'Save'}</button>
       ${isNew ? '' : '<div class="danger"><button type="button" class="btn warn" data-act="tree-delete">Delete tree</button></div>'}
     </form>`;
@@ -1718,19 +1804,32 @@ function saveTreeForm(form) {
   const f = new FormData(form);
   const name = String(f.get('name') || '').trim();
   const nodes = parseOutline(f.get('outline'));
+  const map = parseMapOutline(f.get('mapOutline'));
   if (!name) { toast('Give it a name'); return; }
-  if (!nodes.length) { toast('Paste an outline first'); return; }
+  if (!nodes.length && !map.length) { toast('Paste the course list or a map first'); return; }
   const fields = { name, source: String(f.get('source') || '').trim(), commitmentId: f.get('commitmentId') || null };
   let t = state.trees.find((x) => x.id === form.dataset.id);
-  if (t) Object.assign(t, fields, { nodes: carryLit(nodes, t.nodes) });
-  else { t = normaliseTree({ ...fields, nodes }); state.trees.push(t); }
+  if (t) Object.assign(t, fields, { nodes: carryLit(nodes, t.nodes), map: carryLit(map, t.map) });
+  else { t = normaliseTree({ ...fields, nodes, map }); state.trees.push(t); }
   treeDraft = null;
   save();
   location.replace('#/knowledge');
 }
-function toggleLeaf(treeId, nodeId) {
+// Tapping a map skill that covers course topics ticks them all (or clears them if all were done).
+function toggleCover(treeId, nodeId) {
   const t = state.trees.find((x) => x.id === treeId);
-  const n = t && findNode(t.nodes, nodeId);
+  const d = t && findNode(deriveMap(t.nodes, t.map).nodes, nodeId);
+  if (!d || !d.cover) return;
+  const leaves = d.cover.map((id) => findNode(t.nodes, id)).filter(Boolean);
+  const all = leaves.every((l) => l.lit);
+  for (const l of leaves) { if (all) { delete l.lit; delete l.at; } else if (!l.lit) { l.lit = true; l.at = todayISO(); } }
+  save();
+  render();
+  toast(all ? `Cleared ${leaves.length} course topics` : `Ticked ${leaves.length} course topics`);
+}
+function toggleLeaf(treeId, nodeId, inMap = false) {
+  const t = state.trees.find((x) => x.id === treeId);
+  const n = t && findNode(inMap ? t.map : t.nodes, nodeId);
   if (!n) return;
   if (n.lit) { delete n.lit; delete n.at; } else { n.lit = true; n.at = todayISO(); }
   save();
@@ -1738,7 +1837,7 @@ function toggleLeaf(treeId, nodeId) {
 }
 function treesForCommitment(id) {
   const ts = state.trees.filter((t) => t.commitmentId === id);
-  return ts.map((t) => { const p = treeProgress(t.nodes); return `<a class="crow" href="#/knowledge"><div class="ctext"><div class="n">🌳 ${escapeHtml(t.name)}</div>
+  return ts.map((t) => { const p = treeProgress(treeMain(t)); return `<a class="crow" href="#/knowledge"><div class="ctext"><div class="n">🌳 ${escapeHtml(t.name)}</div>
     <div class="sub">${Math.round(p.pct * 100)}% lit · ${p.lit}/${p.total} topics</div><div class="mini"><i style="width:${p.pct * 100}%"></i></div></div><span class="chev">›</span></a>`; }).join('');
 }
 
@@ -3411,7 +3510,9 @@ document.addEventListener('click', (e) => {
   const periodItem = () => state.weeks[btn.dataset.wk]?.items[btn.dataset.id];
   switch (act) {
     case 'apps-refresh': refreshApps({ force: true }); break;
-    case 'tree-lit': toggleLeaf(btn.dataset.tree, btn.dataset.node); break;
+    case 'tree-lit': toggleLeaf(btn.dataset.tree, btn.dataset.node, btn.dataset.map === '1'); break;
+    case 'tree-cover': toggleCover(btn.dataset.tree, btn.dataset.node); break;
+    case 'map-prompt': { const f = btn.closest('form'); copyText(mapPrompt(f.name.value.trim(), f.outline.value)); break; }
     case 'tree-fold': { const id = btn.dataset.node; if (treeFold.has(id)) treeFold.delete(id); else treeFold.add(id); render(); break; }
     case 'tree-view': treeView = btn.dataset.v; render(); break;
     case 'tree-prompt': { const f = btn.closest('form'); copyText(treePrompt(f.name.value.trim(), f.source.value.trim())); break; }
@@ -3578,10 +3679,11 @@ function syncFormVisibility(form) {
   form.dataset.tbc = String(fd.get('tbc') === 'on');
 }
 document.addEventListener('input', (e) => {
-  if (e.target.name === 'outline' && e.target.closest('form[data-form="tree"]')) {
-    treeDraft = e.target.value;
-    const nodes = parseOutline(treeDraft), box = $app.querySelector('.tpreview');
-    if (box) box.innerHTML = nodes.length ? treeSvg({ id: 'preview', name: e.target.form.name.value || 'Preview' }, nodes, { interactive: false }) : '<p class="muted small">Nothing yet.</p>';
+  const tform = e.target.closest('form[data-form="tree"]');
+  if (tform && ['outline', 'mapOutline', 'name'].includes(e.target.name)) {
+    treeDraft = { outline: tform.outline.value, map: tform.mapOutline.value };
+    const box = $app.querySelector('.tpreview-wrap');
+    if (box) box.innerHTML = treePreviewHtml(tform.name.value, treeDraft.outline, treeDraft.map);
     return;
   }
   const tf = e.target.closest('form[data-form="test"]');
