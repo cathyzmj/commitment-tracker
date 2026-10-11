@@ -1532,7 +1532,116 @@ function normaliseNodes(ns, depth = 0) {
 const normaliseTree = (t) => ({ id: String(t.id || uid()), name: String(t.name || 'Knowledge tree'), source: String(t.source || ''),
   commitmentId: t.commitmentId || null, created: t.created || todayISO(), nodes: normaliseNodes(t.nodes) });
 
-const treeOpen = new Set(); // branches folded open this session (top level starts open)
+// Knowledge map: the tree drawn left to right as dots joined by curves. Tap a topic to light it;
+// tap a branch dot to fold or unfold it. Lit topics glow and light the links leading to them.
+const treeFold = new Set(); // branch ids folded this session
+let treeView = 'map';       // 'map' or 'list'
+const K_ROW = 30, K_COL = 132, K_PAD = 18;
+const clip = (t, n) => (t.length > n ? `${t.slice(0, n - 1)}…` : t);
+const narrowMap = () => window.innerWidth < 640;
+function treeSvg(tree, nodes, { interactive = true, narrow = narrowMap() } = {}) {
+  if (narrow) return treeRowsSvg(tree, nodes, { interactive });
+  const items = [];   // { n, depth, y, x, leaf, p }
+  const links = [];
+  let row = 0, maxDepth = 0, maxLeaf = 0;
+  const place = (n, depth) => {
+    const leaf = !n.k.length;
+    const folded = !leaf && treeFold.has(n.id) && interactive;
+    const it = { n, depth, leaf, folded, p: leaf ? null : treeProgress(n.k), x: K_PAD + depth * K_COL };
+    maxDepth = Math.max(maxDepth, depth);
+    if (leaf || folded) { it.y = K_PAD + 14 + row++ * K_ROW; maxLeaf = Math.max(maxLeaf, Math.min(n.t.length, 34)); }
+    else {
+      const kids = n.k.map((c) => place(c, depth + 1));
+      it.y = (kids[0].y + kids[kids.length - 1].y) / 2;
+      for (const c of kids) links.push({ a: it, b: c });
+    }
+    items.push(it);
+    return it;
+  };
+  const rootP = treeProgress(nodes);
+  const root = { n: { id: 'root', t: tree.name || 'Tree', k: nodes }, depth: 0, leaf: false, p: rootP, x: K_PAD, root: true };
+  const kids = nodes.map((c) => place(c, 1));
+  if (!kids.length) return '';
+  root.y = (kids[0].y + kids[kids.length - 1].y) / 2;
+  for (const c of kids) links.push({ a: root, b: c });
+  const w = K_PAD * 2 + maxDepth * K_COL + maxLeaf * 6.6 + 24;
+  const h = K_PAD * 2 + row * K_ROW + 10;
+  const litness = (it) => (it.leaf ? (it.n.lit ? 1 : 0) : it.p.pct);
+  const path = ({ a, b }) => { const mx = (a.x + b.x) / 2; return `M${a.x},${a.y} C${mx},${a.y} ${mx},${b.y} ${b.x},${b.y}`; };
+  const ring = (it, r) => { const c = 2 * Math.PI * r; return `<circle class="kr-track" r="${r}"/><circle class="kr-fill" r="${r}" stroke-dasharray="${(it.p.pct * c).toFixed(1)} ${c.toFixed(1)}" transform="rotate(-90)"/>`; };
+  const nodeSvg = (it) => {
+    const t = escapeHtml(it.n.t);
+    if (it.leaf) {
+      return `<g class="kn leaf ${it.n.lit ? 'lit' : ''}" transform="translate(${it.x},${it.y})" ${interactive ? `data-act="tree-lit" data-tree="${tree.id}" data-node="${it.n.id}" role="button" tabindex="0" aria-pressed="${!!it.n.lit}"` : ''}>
+        <title>${t}</title><rect class="khit" x="-10" y="-13" width="${Math.min(it.n.t.length, 34) * 6.6 + 30}" height="26" rx="8"/>
+        ${it.n.lit ? '<circle class="kglow" r="11"/>' : ''}<circle class="kdotc" r="6"/><text x="13" y="4">${escapeHtml(clip(it.n.t, 34))}</text></g>`;
+    }
+    const big = it.root ? 13 : 9;
+    const done = it.p.lit === it.p.total;
+    return `<g class="kn branch ${done ? 'lit' : ''} ${it.folded ? 'folded' : ''} ${it.root ? 'root' : ''}" transform="translate(${it.x},${it.y})"
+        ${interactive && !it.root ? `data-act="tree-fold" data-node="${it.n.id}" role="button" tabindex="0" aria-expanded="${!it.folded}"` : ''}>
+      <title>${t} · ${it.p.lit}/${it.p.total}</title>
+      ${done ? `<circle class="kglow" r="${big + 5}"/>` : ''}<circle class="kcore" r="${big - 3}"/>${ring(it, big)}
+      ${it.root ? `<text class="kpct" y="4">${Math.round(it.p.pct * 100)}</text>` : it.folded ? `<text class="kplus" y="4">+</text>` : ''}
+      <text class="klabel" x="${it.root ? -10 : -6}" y="${it.root ? big + 18 : -(big + 7)}">${escapeHtml(clip(it.n.t, it.root ? 22 : 19))}</text>
+      ${it.folded ? `<text class="kcount" x="${big + 6}" y="4">${it.p.lit}/${it.p.total}</text>` : ''}</g>`;
+  };
+  return `<div class="kmap"><svg viewBox="0 0 ${Math.ceil(w)} ${Math.ceil(h)}" width="${Math.ceil(w)}" height="${Math.ceil(h)}" role="img" aria-label="${escapeHtml(tree.name || 'Knowledge tree')}">
+    <defs><linearGradient id="klink" x1="0" x2="1"><stop offset="0" stop-color="#fa8072"/><stop offset="1" stop-color="#ffc93c"/></linearGradient></defs>
+    <g class="klinks">${links.map((l) => { const v = litness(l.b); return `<path d="${path(l)}" class="${v > 0 ? 'on' : ''}" ${v > 0 ? `style="opacity:${(0.35 + 0.65 * v).toFixed(2)}"` : ''}/>`; }).join('')}</g>
+    ${nodeSvg(root)}${items.map(nodeSvg).join('')}
+  </svg></div>`;
+}
+// Phones: the same dots and links, one topic per row (children step right under their branch).
+const R_ROW = 34, R_IND = 22;
+function treeRowsSvg(tree, nodes, { interactive }) {
+  const rows = [], links = [];
+  const walk = (n, depth, parent) => {
+    const leaf = !n.k.length;
+    const folded = !leaf && treeFold.has(n.id) && interactive;
+    const it = { n, depth, leaf, folded, p: leaf ? null : treeProgress(n.k), x: K_PAD + depth * R_IND, y: K_PAD + rows.length * R_ROW };
+    rows.push(it);
+    if (parent) links.push({ a: parent, b: it });
+    if (!leaf && !folded) n.k.forEach((c) => walk(c, depth + 1, it));
+  };
+  const root = { n: { id: 'root', t: tree.name || 'Tree', k: nodes }, depth: 0, leaf: false, p: treeProgress(nodes), x: K_PAD, y: K_PAD, root: true };
+  rows.push(root);
+  nodes.forEach((c) => walk(c, 1, root));
+  if (rows.length < 2) return '';
+  const h = K_PAD * 2 + (rows.length - 1) * R_ROW;
+  const v = (it) => (it.leaf ? (it.n.lit ? 1 : 0) : it.p.pct);
+  const path = ({ a, b }) => `M${a.x},${a.y + 8} L${a.x},${b.y - 10} Q${a.x},${b.y} ${a.x + 10},${b.y} L${b.x - 8},${b.y}`;
+  const ring = (it, r) => { const c = 2 * Math.PI * r; return `<circle class="kr-track" r="${r}"/><circle class="kr-fill" r="${r}" stroke-dasharray="${(it.p.pct * c).toFixed(1)} ${c.toFixed(1)}" transform="rotate(-90)"/>`; };
+  // Card width minus margins, in characters of ~7px, so long names end in … instead of running off.
+  const room = (it, extra = 0) => Math.max(8, Math.floor((Math.min(window.innerWidth, 640) - 70 - it.x - extra) / 7.1));
+  const node = (it) => {
+    const t = escapeHtml(it.n.t);
+    if (it.leaf) {
+      return `<g class="kn leaf ${it.n.lit ? 'lit' : ''}" transform="translate(${it.x},${it.y})" ${interactive ? `data-act="tree-lit" data-tree="${tree.id}" data-node="${it.n.id}" role="button" tabindex="0" aria-pressed="${!!it.n.lit}"` : ''}>
+        <title>${t}</title><rect class="khit" x="-12" y="-15" width="1000" height="30" rx="8"/>
+        ${it.n.lit ? '<circle class="kglow" r="11"/>' : ''}<circle class="kdotc" r="6"/><text x="14" y="4.5">${escapeHtml(clip(it.n.t, room(it)))}</text></g>`;
+    }
+    const big = it.root ? 11 : 8, done = it.p.lit === it.p.total;
+    return `<g class="kn branch ${done ? 'lit' : ''} ${it.folded ? 'folded' : ''} ${it.root ? 'root' : ''}" transform="translate(${it.x},${it.y})"
+        ${interactive && !it.root ? `data-act="tree-fold" data-node="${it.n.id}" role="button" tabindex="0" aria-expanded="${!it.folded}"` : ''}>
+      <title>${t}</title><rect class="khit" x="-12" y="-15" width="1000" height="30" rx="8"/>
+      ${done ? `<circle class="kglow" r="${big + 5}"/>` : ''}<circle class="kcore" r="${big - 3}"/>${ring(it, big)}
+      ${it.folded ? '<text class="kplus" y="4.5">+</text>' : ''}
+      <text class="klabel" x="${big + 9}" y="4.5">${escapeHtml(clip(it.n.t, room(it, 40)))} <tspan class="kcount">${it.p.lit}/${it.p.total}</tspan></text></g>`;
+  };
+  return `<div class="kmap rows"><svg width="100%" height="${h}" role="img" aria-label="${escapeHtml(tree.name || 'Knowledge tree')}">
+    <defs><linearGradient id="klink" x1="0" x2="1"><stop offset="0" stop-color="#fa8072"/><stop offset="1" stop-color="#ffc93c"/></linearGradient></defs>
+    <g class="klinks">${links.map((l) => { const x = v(l.b); return `<path d="${path(l)}" class="${x > 0 ? 'on' : ''}" ${x > 0 ? `style="opacity:${(0.35 + 0.65 * x).toFixed(2)}"` : ''}/>`; }).join('')}</g>
+    ${rows.map(node).join('')}</svg></div>`;
+}
+let lastNarrow = narrowMap();
+window.addEventListener('resize', () => {
+  if (narrowMap() === lastNarrow) return;
+  lastNarrow = narrowMap();
+  if (route.page === 'knowledge' && !typing()) render();
+});
+function treeBodyHtml(t) { return treeView === 'map' ? treeSvg(t, t.nodes) : treeNodesHtml(t, t.nodes); }
+const treeOpen = new Set(); // list view: branches folded open this session (top level starts open)
 function treeNodesHtml(tree, nodes, depth = 0) {
   return `<ul class="ktree">${nodes.map((n) => {
     if (!n.k.length) {
@@ -1554,13 +1663,14 @@ function treeCardHtml(t) {
     <div class="kprog"><b>${Math.round(p.pct * 100)}%</b><span>lit · ${p.lit} of ${p.total} topics${p.week ? ` · <em>+${p.week} this week</em>` : ''}</span></div>
     <div class="hbar"><i style="width:${p.pct * 100}%"></i></div>
     ${c || t.source ? `<p class="small muted pad">${c ? `Routine: <a href="#/c/${c.id}">${escapeHtml(c.name)}</a>` : ''}${c && t.source ? ' · ' : ''}${t.source ? linkify(escapeHtml(t.source)) : ''}</p>` : ''}
-    ${treeNodesHtml(t, t.nodes)}
+    ${treeBodyHtml(t)}
   </section>`;
 }
 function knowledgePageHtml() {
   const trees = state.trees;
   return `
-    <header class="top">${topBar({ label: 'Routine', title: 'Knowledge', right: '<a class="txt-btn" href="#/knowledge/new">+ New</a>' })}${routineNav('knowledge')}</header>
+    <header class="top">${topBar({ label: 'Routine', title: 'Knowledge', right: '<a class="txt-btn" href="#/knowledge/new">+ New</a>' })}${routineNav('knowledge')}
+      ${trees.length ? `<div class="seg-mini kview"><button data-act="tree-view" data-v="map" class="${treeView === 'map' ? 'on' : ''}">Map</button><button data-act="tree-view" data-v="list" class="${treeView === 'list' ? 'on' : ''}">List</button></div>` : ''}</header>
     ${trees.length ? trees.map(treeCardHtml).join('') : `
       <section class="card empty">
         <p><b>Light up what you've learned.</b></p>
@@ -1599,7 +1709,7 @@ function treeEditHtml() {
         <span class="help">One topic per line; indent with two spaces to put a topic under the one above.</span>
         <textarea name="outline" class="code" rows="12" placeholder="Accounting&#10;  Three statements&#10;    Income statement&#10;    Balance sheet">${escapeHtml(outline)}</textarea></label>
       <div class="f"><span>Preview · ${p.total} topics${!isNew && p.lit ? ` · ${p.lit} still lit` : ''}</span>
-        <div class="tpreview">${preview.length ? treeNodesHtml({ id: 'preview' }, preview).replace(/data-act="tree-lit"/g, 'disabled') : '<p class="muted small">Nothing yet.</p>'}</div></div>
+        <div class="tpreview">${preview.length ? treeSvg({ id: 'preview', name: t.name || 'Preview' }, preview, { interactive: false }) : '<p class="muted small">Nothing yet.</p>'}</div></div>
       <button class="btn primary" type="submit">${isNew ? 'Import tree' : 'Save'}</button>
       ${isNew ? '' : '<div class="danger"><button type="button" class="btn warn" data-act="tree-delete">Delete tree</button></div>'}
     </form>`;
@@ -3302,6 +3412,8 @@ document.addEventListener('click', (e) => {
   switch (act) {
     case 'apps-refresh': refreshApps({ force: true }); break;
     case 'tree-lit': toggleLeaf(btn.dataset.tree, btn.dataset.node); break;
+    case 'tree-fold': { const id = btn.dataset.node; if (treeFold.has(id)) treeFold.delete(id); else treeFold.add(id); render(); break; }
+    case 'tree-view': treeView = btn.dataset.v; render(); break;
     case 'tree-prompt': { const f = btn.closest('form'); copyText(treePrompt(f.name.value.trim(), f.source.value.trim())); break; }
     case 'tree-delete': {
       if (!confirm('Delete this knowledge tree?')) break;
@@ -3469,7 +3581,7 @@ document.addEventListener('input', (e) => {
   if (e.target.name === 'outline' && e.target.closest('form[data-form="tree"]')) {
     treeDraft = e.target.value;
     const nodes = parseOutline(treeDraft), box = $app.querySelector('.tpreview');
-    if (box) box.innerHTML = nodes.length ? treeNodesHtml({ id: 'preview' }, nodes).replace(/data-act="tree-lit"/g, 'disabled') : '<p class="muted small">Nothing yet.</p>';
+    if (box) box.innerHTML = nodes.length ? treeSvg({ id: 'preview', name: e.target.form.name.value || 'Preview' }, nodes, { interactive: false }) : '<p class="muted small">Nothing yet.</p>';
     return;
   }
   const tf = e.target.closest('form[data-form="test"]');
