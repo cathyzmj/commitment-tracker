@@ -124,6 +124,60 @@ let writeState = async function () {
     tx.onerror = () => reject(tx.error);
   });
 };
+
+// ---------- Background picture (this device only; too big to sync) ----------
+const BG_KEY = 'bgpic';
+let bg = { blob: null, strength: 0.5 }, bgUrl = null;
+async function bgRead() {
+  const db = await openDb();
+  return new Promise((resolve) => {
+    const req = db.transaction(STORE).objectStore(STORE).get(BG_KEY);
+    req.onsuccess = () => resolve(req.result || null);
+    req.onerror = () => resolve(null);
+  });
+}
+async function bgWrite() {
+  const db = await openDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE, 'readwrite');
+    tx.objectStore(STORE).put(bg, BG_KEY);
+    tx.oncomplete = resolve;
+    tx.onerror = () => reject(tx.error);
+  });
+}
+function applyBg() {
+  const el = document.getElementById('bgpic');
+  if (bgUrl) URL.revokeObjectURL(bgUrl);
+  bgUrl = bg.blob ? URL.createObjectURL(bg.blob) : null;
+  el.hidden = !bgUrl;
+  el.style.backgroundImage = bgUrl ? `url("${bgUrl}")` : '';
+  el.style.opacity = bg.strength;
+  document.body.classList.toggle('has-bg', !!bgUrl);
+}
+// Shrinks big photos so they load quickly and fit in storage.
+async function shrinkImage(file, max = 2400) {
+  const img = await createImageBitmap(file);
+  const k = Math.min(1, max / Math.max(img.width, img.height));
+  const c = Object.assign(document.createElement('canvas'), { width: Math.round(img.width * k), height: Math.round(img.height * k) });
+  c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+  return new Promise((resolve) => c.toBlob(resolve, 'image/jpeg', 0.85));
+}
+function openBgSheet() {
+  const pct = Math.round(bg.strength * 100);
+  openSheet(`
+    <div class="sheet-head"><h3>Background picture</h3></div>
+    <div class="menu">
+      ${bgUrl ? `<div class="bg-preview" style="background-image:url('${bgUrl}')"></div>
+      <label class="f"><span>How visible: <b id="bgPct">${pct}%</b></span>
+        <input class="bg-range" id="bgStrength" type="range" min="5" max="100" step="5" value="${pct}"></label>
+      <div class="bg-range-row"><span>Faint</span><span>Full picture</span></div>` : '<p class="muted small">Pick a photo to show behind the app. You can then make it more or less see-through.</p>'}
+      <button class="btn${bgUrl ? '' : ' primary'}" data-act="bg-pick">${bgUrl ? 'Change picture…' : 'Choose picture…'}</button>
+      ${bgUrl ? '<button class="btn warn" data-act="bg-remove">Remove picture</button>' : ''}
+      <p class="muted small">Saved on this device only — set it separately on your phone and Mac.</p>
+      <button class="btn" data-act="close">Close</button>
+    </div>`);
+}
+
 let saveTimer = null;
 function save() {
   clearTimeout(saveTimer);
@@ -2442,6 +2496,7 @@ function openMenu() {
     <div class="menu">
       <a class="btn" href="#/sync">Sync with Mac / other devices${state.sync.enabled ? ' · on' : ''}</a>
       <a class="btn" href="#/widget">Phone widget</a>
+      <button class="btn" data-act="bg-sheet">Background picture…</button>
       <button class="btn" data-act="export-xlsx">Export all weeks to Excel</button>
       <button class="btn" data-act="export-json">Back up (JSON)</button>
       <button class="btn" data-act="import-json">Restore from backup…</button>
@@ -2728,6 +2783,9 @@ document.addEventListener('click', (e) => {
     case 'export-xlsx': exportXlsx(); break;
     case 'export-json': exportJson(); break;
     case 'import-json': document.getElementById('importFile').click(); break;
+    case 'bg-sheet': openBgSheet(); break;
+    case 'bg-pick': document.getElementById('bgFile').click(); break;
+    case 'bg-remove': bg.blob = null; applyBg(); bgWrite().catch(() => {}); openBgSheet(); break;
   }
 });
 
@@ -2754,12 +2812,26 @@ function syncFormVisibility(form) {
   form.dataset.tbc = String(fd.get('tbc') === 'on');
 }
 document.addEventListener('input', (e) => {
+  if (e.target.id === 'bgStrength') {
+    bg.strength = Number(e.target.value) / 100;
+    document.getElementById('bgpic').style.opacity = bg.strength;
+    document.getElementById('bgPct').textContent = `${e.target.value}%`;
+    return;
+  }
   const fu = e.target.closest('form[data-form="followup"]');
   if (fu) syncFollowupForm(fu);
   const form = e.target.closest('form[data-form="commitment"]');
   if (form) syncFormVisibility(form);
 });
 document.addEventListener('change', (e) => {
+  if (e.target.id === 'bgFile') {
+    const file = e.target.files[0];
+    e.target.value = '';
+    if (file) shrinkImage(file).then((blob) => { bg.blob = blob; applyBg(); openBgSheet(); return bgWrite(); })
+      .catch((err) => toast('Could not use that picture: ' + err.message));
+    return;
+  }
+  if (e.target.id === 'bgStrength') { bgWrite().catch(() => {}); return; }
   if (e.target.id === 'importFile') {
     const f = e.target.files[0];
     e.target.value = '';
@@ -2841,6 +2913,7 @@ let reloadingForUpdate = false;
   }
   if (state.sync.enabled) resetRecordHashes();
   render();
+  bgRead().then((saved) => { if (saved) { bg = { strength: 0.5, ...saved }; applyBg(); } });
   syncThenCalendars();
   setInterval(() => { if (document.visibilityState === 'visible') syncNow(); }, SYNC_POLL_MS);
   setInterval(() => { if (document.visibilityState === 'visible') { syncAll({ quiet: true }); refreshApps(); } }, 5 * 60e3);
