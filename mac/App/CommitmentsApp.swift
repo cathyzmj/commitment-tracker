@@ -6,7 +6,7 @@ struct CommitmentsApp: App {
     @StateObject private var web = WebController()
 
     var body: some Scene {
-        Window("Commitments", id: "main") {
+        Window("I Commit!", id: "main") {
             WebContainer(controller: web)
                 .frame(minWidth: 420, minHeight: 560)
                 .onOpenURL { web.open($0) } // commitments://today etc. (from the widget)
@@ -16,10 +16,11 @@ struct CommitmentsApp: App {
             CommandGroup(replacing: .newItem) {}
             CommandMenu("Go") {
                 Button("Today") { web.go("today") }.keyboardShortcut("1")
-                Button("Week") { web.go("week") }.keyboardShortcut("2")
-                Button("Calendar") { web.go("cal") }.keyboardShortcut("3")
+                Button("Calendar") { web.go("cal") }.keyboardShortcut("2")
+                Button("Routine") { web.go("routine") }.keyboardShortcut("3")
                 Button("Applications") { web.go("apps") }.keyboardShortcut("4")
-                Button("Commitments") { web.go("commitments") }.keyboardShortcut("5")
+                Button("Work Buddy") { web.go("buddy") }.keyboardShortcut("5")
+                Button("All commitments") { web.go("commitments") }.keyboardShortcut("6")
                 Divider()
                 Button("Reload") { web.reload() }.keyboardShortcut("r")
             }

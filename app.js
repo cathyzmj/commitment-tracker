@@ -16,8 +16,8 @@ const DEFAULT_COMMITMENTS = [
   ['weekly', 'task', 'Social', 'Club meeting', 1, '', 1],
 ]
 const DAY_NAMES = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-const FREQS = ['daily', 'weekly', 'once'];
-const FREQ_LABEL = { daily: 'Daily', weekly: 'Weekly', once: 'One-off' };
+const FREQS = ['daily', 'weekly', 'periodic', 'once'];
+const FREQ_LABEL = { daily: 'Daily', weekly: 'Weekly', periodic: 'Periodically', once: 'One-off' };
 const LONG_PRESS_MS = 450;
 
 // ---------- Dates ----------
@@ -70,7 +70,9 @@ const timeRange = (x) => (x.time ? `${x.time}${x.endTime ? '–' + x.endTime : '
 const isHourUnit = (u) => /^(h|hr|hrs|hour|hours)$/i.test(String(u || '').trim());
 const CHECK = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 const ICONS = {
+  get routine() { return this.week; },
   today: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="2"/><path d="M8 12.3l2.7 2.7L16.2 9.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+  buddy: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="8.5" cy="8.5" r="3.2" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="16.5" cy="9.5" r="2.6" fill="none" stroke="currentColor" stroke-width="2"/><path d="M2.8 19.5c.6-3.3 2.9-5.2 5.7-5.2s5.1 1.9 5.7 5.2M14.6 14.6c.6-.2 1.2-.3 1.9-.3 2.4 0 4.3 1.6 4.8 4.4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>',
   week: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="4.5" width="17" height="15" rx="3" fill="none" stroke="currentColor" stroke-width="2"/><path d="M3.5 12h17M9.2 4.5v15M14.8 4.5v15" stroke="currentColor" stroke-width="1.8"/></svg>',
   apps: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="7" width="17" height="12.5" rx="2.5" fill="none" stroke="currentColor" stroke-width="2"/><path d="M9 7V5.5A1.5 1.5 0 0 1 10.5 4h3A1.5 1.5 0 0 1 15 5.5V7M3.5 12.5h17" fill="none" stroke="currentColor" stroke-width="2"/></svg>',
   cal: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="5" width="17" height="15" rx="3" fill="none" stroke="currentColor" stroke-width="2"/><path d="M3.5 10h17M8 3v4M16 3v4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><rect x="7" y="13" width="4" height="3" rx="1" fill="currentColor"/></svg>',
@@ -202,7 +204,7 @@ let reorderMode = false;
 function newCommitment(fields) {
   return {
     id: uid(), name: '', section: 'Other', freq: 'daily', kind: 'task', target: 1, unit: '', step: 1,
-    hours: 1, date: null, time: null, endTime: null, notes: '', notionUrl: '', links: [], source: null, schedule: false,
+    hours: 1, everyDays: 7, date: null, time: null, endTime: null, notes: '', notionUrl: '', links: [], source: null, schedule: false,
     archived: false, order: 0, ...fields,
   };
 }
@@ -224,7 +226,9 @@ const fit7 = (a, fill) => (Array.isArray(a) ? a.slice(0, 7) : []).concat(Array(7
 function normaliseCommitment(c) {
   const n = newCommitment(c);
   n.freq = FREQS.includes(n.freq) ? n.freq : 'daily';
-  n.kind = n.kind === 'counter' ? 'counter' : 'task';
+  n.kind = n.kind === 'counter' && n.freq !== 'periodic' ? 'counter' : 'task';
+  n.everyDays = Math.min(365, Math.max(1, Math.round(num(n.everyDays, 7)) || 7));
+  if (n.freq === 'periodic' && !n.date) n.date = todayISO(); // first due date
   n.links = (Array.isArray(n.links) ? n.links : []).map((l) => ({ label: String(l.label || ''), url: cleanUrl(l.url) })).filter((l) => l.url);
   n.notionUrl = cleanUrl(n.notionUrl);
   n.stageUrl = cleanUrl(n.stageUrl); // test / interview link for application follow-ups
@@ -309,7 +313,7 @@ function migrate(s) {
 
 // ---------- Weeks ----------
 // A week stores a snapshot of each commitment so past weeks keep the plan they had.
-const SNAPSHOT_FIELDS = ['name', 'section', 'freq', 'kind', 'target', 'unit', 'step', 'hours', 'order', 'date', 'time', 'endTime', 'schedule', 'timeUnit'];
+const SNAPSHOT_FIELDS = ['name', 'section', 'freq', 'kind', 'target', 'unit', 'step', 'hours', 'order', 'date', 'time', 'endTime', 'schedule', 'timeUnit', 'everyDays'];
 function blankItem(c) {
   const it = { ticks: Array(7).fill(false), counts: Array(7).fill(0), mins: Array(7).fill(null), count: 0, done: false };
   for (const f of SNAPSHOT_FIELDS) it[f] = c[f];
@@ -376,16 +380,77 @@ function dayHours(it, i) {
 const periodDone = (it) => (it.kind === 'task' ? it.done : reached(it.count, it.target));
 const periodHours = (it) => (it.kind === 'task' ? (it.done ? it.hours : 0) : counterHours(it, it.count));
 
-function weekStats(w) {
+// ---------- Periodic routines ----------
+// e.g. laundry every 7 days: due on its first date, then N days after it was last done.
+// Missed ones stay due (overdue) until ticked.
+const addDaysISO = (iso, n) => { const d = parseISO(iso); d.setDate(d.getDate() + n); return isoDate(d); };
+const tickedOn = (id, iso) => { const it = state.weeks[weekOf(iso)] && state.weeks[weekOf(iso)].items[id]; return !!(it && it.ticks[dayIndexOf(iso)]); };
+function lastDoneISO(id, before) {
+  let last = null;
+  for (const w of Object.values(state.weeks)) {
+    const it = w.items[id];
+    if (!it) continue;
+    it.ticks.forEach((t, i) => {
+      if (!t) return;
+      const d = isoDate(dayDate(w.start, i));
+      if (d < before && (!last || d > last)) last = d;
+    });
+  }
+  return last;
+}
+// Next due date counting only ticks before `before`.
+function nextDueISO(id, x, before) {
+  const last = lastDoneISO(id, before);
+  return last ? addDaysISO(last, x.everyDays || 7) : (x.date || todayISO());
+}
+// 'done' | 'due' | 'overdue' | null for one day.
+function periodicOn(id, x, iso) {
+  if (tickedOn(id, iso)) return 'done';
+  const today = todayISO();
+  if (iso < today) return null;
+  let due = nextDueISO(id, x, iso);
+  if (iso === today) return due <= today ? (due < today ? 'overdue' : 'due') : null;
+  if (due < today) due = today;
+  return due === iso ? 'due' : null;
+}
+// Upcoming due date (today if overdue or due today and not yet done).
+function periodicNext(id, x) {
+  const today = todayISO();
+  const st = periodicOn(id, x, today);
+  if (st === 'due' || st === 'overdue') return today;
+  const due = nextDueISO(id, x, addDaysISO(today, 1));
+  return due < today ? today : due;
+}
+const everyLabel = (n) => (n % 7 === 0 ? (n === 7 ? 'week' : `${n / 7} weeks`) : n === 1 ? 'day' : `${n} days`);
+function periodicSub(id, x) {
+  const today = todayISO();
+  const st = periodicOn(id, x, today);
+  if (st === 'done') return `done today · next ${fmtShort(addDaysISO(today, x.everyDays || 7))}`;
+  if (st === 'overdue') { const n = -daysUntil(nextDueISO(id, x, today)); return `<span class="err">overdue ${n} day${n === 1 ? '' : 's'}</span>`; }
+  if (st === 'due') return 'due today';
+  const next = periodicNext(id, x);
+  return `next ${daysUntil(next) === 1 ? 'tomorrow' : fmtShort(next)}`;
+}
+
+function weekStats(w, { routine = false } = {}) {
   const cur = currentWeekKey();
   const ti = todayIndex(w.start);
   const daysElapsed = w.start < cur ? 7 : w.start > cur ? 0 : ti + 1;
   const today = todayISO();
   let planned = 0, actual = 0, pace = 0, ticked = 0, total = 0;
-  for (const it of Object.values(w.items)) {
-    if (!it.freq || it.schedule) continue;
+  for (const [id, it] of Object.entries(w.items)) {
+    if (!it.freq || it.schedule || (routine && it.freq === 'once')) continue;
     const ph = plannedHours(it);
-    if (it.freq === 'daily') {
+    if (it.freq === 'periodic') {
+      for (let i = 0; i < 7; i++) {
+        const d = isoDate(dayDate(w.start, i));
+        const st = periodicOn(id, it, d);
+        if (!st) continue;
+        planned += ph; total++;
+        if (d <= today) pace += ph;
+        if (st === 'done') { ticked++; actual += dayHours(it, i); }
+      }
+    } else if (it.freq === 'daily') {
       planned += ph * 7; pace += ph * daysElapsed; total += 7;
       for (let i = 0; i < 7; i++) { if (dayDone(it, i)) ticked++; actual += dayHours(it, i); }
     } else {
@@ -400,10 +465,13 @@ function weekStats(w) {
 function dayStats(w, i) {
   const iso = isoDate(dayDate(w.start, i));
   let planned = 0, actual = 0, done = 0, total = 0;
-  for (const it of Object.values(w.items)) {
+  for (const [id, it] of Object.entries(w.items)) {
     if (!it.freq || it.schedule) continue;
     if (it.freq === 'daily') {
       planned += plannedHours(it); actual += dayHours(it, i); total++; if (dayDone(it, i)) done++;
+    } else if (it.freq === 'periodic') {
+      const st = periodicOn(id, it, iso);
+      if (st) { planned += plannedHours(it); total++; if (st === 'done') { done++; actual += dayHours(it, i); } }
     } else if (it.freq === 'once' && it.date === iso) {
       planned += plannedHours(it); actual += periodHours(it); total++; if (periodDone(it)) done++;
     }
@@ -445,6 +513,7 @@ function groupBySection(entries, getSection = (e) => e[1].section) {
 // Planned time is stored in hours; timeUnit 'min' just shows it in minutes (e.g. 45m).
 const fmtPlan = (x) => (x.timeUnit === 'min' ? `${Math.round((x.hours || 0) * 60)}m` : fmtH(x.hours || 0));
 function targetLabel(x) {
+  if (x.freq === 'periodic') return `${fmtPlan(x)} · every ${everyLabel(x.everyDays || 7)}`;
   const per = x.freq === 'daily' ? '/day' : x.freq === 'weekly' ? '/week' : '';
   if (x.kind === 'counter') {
     return isHourUnit(x.unit) ? `${round2(x.target)}h${per}` : `${round2(x.target)} ${x.unit || ''}`.trim() + per + (x.hours ? ` · ≈${fmtPlan(x)}` : '');
@@ -456,7 +525,7 @@ function countLabel(it, n) {
 }
 
 // ---------- Routing ----------
-// #/today  #/week  #/commitments  #/c/<id>  #/c/<id>/edit  #/new/<freq>
+// #/today  #/cal  #/routine (was #/week)  #/apps  #/buddy  #/commitments  #/c/<id>  #/c/<id>/edit  #/new/<freq>
 function parseHash() {
   const [a, b, c] = location.hash.replace(/^#\/?/, '').split('/');
   if (a === 'c' && b) return { tab: 'commitments', id: b, edit: c === 'edit' };
@@ -465,7 +534,8 @@ function parseHash() {
   if (a === 'sync') return { tab: 'commitments', page: 'sync' };
   if (a === 'calendar') return { tab: 'commitments', page: b === 'review' ? 'review' : 'calendar' };
   if (a === 'new') return { tab: 'commitments', id: 'new', edit: true, freq: FREQS.includes(b) ? b : 'daily' };
-  return { tab: ['today', 'week', 'cal', 'commitments'].includes(a) ? a : 'today' };
+  if (a === 'week') return { tab: 'routine' };
+  return { tab: ['today', 'routine', 'cal', 'buddy', 'commitments'].includes(a) ? a : 'today' };
 }
 let route = parseHash();
 window.addEventListener('hashchange', () => {
@@ -495,7 +565,8 @@ function render() {
   else if (route.page === 'review') html = reviewPageHtml();
   else if (route.id && route.edit) html = editPageHtml();
   else if (route.id) html = detailPageHtml(route.id);
-  else if (route.tab === 'week') html = weekTabHtml();
+  else if (route.tab === 'routine') html = weekTabHtml();
+  else if (route.tab === 'buddy') html = buddyTabHtml();
   else if (route.tab === 'cal') html = calendarTabHtml();
   else if (route.tab === 'apps') html = appsTabHtml();
   else if (route.tab === 'commitments') html = commitmentsTabHtml();
@@ -508,11 +579,13 @@ function render() {
 // ---------- Side navigation (wide screens, e.g. the Mac app) ----------
 // The main pages, plus the current page's sections as jump links (highlighted while scrolling).
 // Phones keep the bottom tab bar instead (CSS switches at 900px).
-const NAV_PAGES = [['today', 'Today'], ['cal', 'Calendar'], ['week', 'Week'], ['apps', 'Applications'], ['commitments', 'Commitments']];
+// [route, full name, short name for the phone tab bar]
+const NAV_PAGES = [['today', 'Today', 'Today'], ['cal', 'Calendar', 'Calendar'], ['routine', 'Routine', 'Routine'],
+  ['apps', 'Applications', 'Apps'], ['buddy', 'Work Buddy', 'Buddy'], ['commitments', 'All commitments', 'All']];
 function sideNavHtml() {
   const extra = [['#/calendar', 'Calendars'], ['#/sync', `Sync${state.sync.enabled ? ' · on' : ''}`], ['#/widget', 'Phone widget']];
   return `<aside class="sidenav" aria-label="Navigation">
-    <div class="sn-brand"><img src="icons/icon-192.png" alt=""><b>Commitments</b></div>
+    <div class="sn-brand"><img src="icons/icon-192.png" alt=""><b>I Commit!</b></div>
     <nav class="sn-main">${NAV_PAGES.map(([t, label]) => `
       <a href="#/${t}" class="sn-page ${route.tab === t ? 'on' : ''}" ${route.tab === t && !route.id && !route.page ? 'aria-current="page"' : ''}>${ICONS[t]}<span>${label}</span></a>
       ${route.tab === t ? '<div class="sn-sections"></div>' : ''}`).join('')}</nav>
@@ -562,7 +635,7 @@ window.addEventListener('scroll', () => {
 
 function tabBarHtml() {
   const tab = (t, label) => `<a href="#/${t}" class="${route.tab === t ? 'on' : ''}" ${route.tab === t && !route.id ? 'aria-current="page"' : ''}>${ICONS[t]}<span>${label}</span></a>`;
-  return `<nav class="tabbar">${tab('today', 'Today')}${tab('cal', 'Calendar')}${tab('week', 'Week')}${tab('apps', 'Applications')}${tab('commitments', 'Commitments')}</nav>`;
+  return `<nav class="tabbar">${NAV_PAGES.map(([t, , short]) => tab(t, short)).join('')}</nav>`;
 }
 
 function topBar({ left = '', label = '', title = '', right = '', titleAct = '' }) {
@@ -640,6 +713,22 @@ function statsHtml(s, { showPace }) {
 }
 
 // ---------- Today tab ----------
+// Routine (daily, weekly, periodically), then Today only (one-off tasks).
+function todayDailyRow(wk, ti, id, it, sub) {
+  const key = `${wk}:${id}:${ti}`;
+  const control = it.kind === 'task'
+    ? `<button class="big cell ${cellClass(it, ti)}" data-cell="${key}" aria-label="${escapeHtml(cellLabel(it, ti))}"><span class="box">${cellInner(it, ti)}</span></button>`
+    : `<div class="ctr">
+         <button class="ctr-minus" data-act="cdec" data-key="${key}" aria-label="Minus ${it.step}" ${it.counts[ti] <= 0 ? 'disabled' : ''}>−</button>
+         <button class="big cell ${cellClass(it, ti)}" data-cell="${key}" aria-label="${escapeHtml(cellLabel(it, ti))}">
+           <span class="box wide">${round2(it.counts[ti])}<small>/${round2(it.target)}</small></span></button>
+       </div>`;
+  return `
+    <div class="trow ${it.archived ? 'archived' : ''}">
+      <a class="name" href="#/c/${id}"><div class="n">${escapeHtml(it.name)}</div><div class="sub">${sub}</div></a>
+      ${control}
+    </div>`;
+}
 function todayTabHtml() {
   const wk = currentWeekKey();
   const w = getWeek(wk);
@@ -652,27 +741,26 @@ function todayTabHtml() {
   for (const [section, entries] of groupBySection(itemsOf(w, 'daily'))) {
     daily += `<div class="sec">${escapeHtml(section)}</div>`;
     for (const [id, it] of entries) {
-      const key = `${wk}:${id}:${ti}`;
       const daysDone = it.ticks.filter((_, i) => dayDone(it, i)).length;
-      const control = it.kind === 'task'
-        ? `<button class="big cell ${cellClass(it, ti)}" data-cell="${key}" aria-label="${escapeHtml(cellLabel(it, ti))}"><span class="box">${cellInner(it, ti)}</span></button>`
-        : `<div class="ctr">
-             <button class="ctr-minus" data-act="cdec" data-key="${key}" aria-label="Minus ${it.step}" ${it.counts[ti] <= 0 ? 'disabled' : ''}>−</button>
-             <button class="big cell ${cellClass(it, ti)}" data-cell="${key}" aria-label="${escapeHtml(cellLabel(it, ti))}">
-               <span class="box wide">${round2(it.counts[ti])}<small>/${round2(it.target)}</small></span></button>
-           </div>`;
-      daily += `
-        <div class="trow ${it.archived ? 'archived' : ''}">
-          <a class="name" href="#/c/${id}"><div class="n">${escapeHtml(it.name)}</div>
-            <div class="sub">${targetLabel(it)} · ${daysDone}/7 this week</div></a>
-          ${control}
-        </div>`;
+      daily += todayDailyRow(wk, ti, id, it, `${targetLabel(it)} · ${daysDone}/7 this week`);
     }
   }
+  const weekly = itemsOf(w, 'weekly');
+  const periodic = itemsOf(w, 'periodic');
+  const dueNow = periodic.filter(([id, it]) => periodicOn(id, it, iso));
+  const notDue = periodic.filter(([id, it]) => !periodicOn(id, it, iso));
   const onceToday = itemsOf(w, 'once').filter(isTask).filter(([, it]) => it.date === iso);
   const onceLater = itemsOf(w, 'once').filter(isTask).filter(([, it]) => it.date > iso);
-  const schedToday = itemsOf(w, 'once').filter(isSched).filter(([, it]) => it.date === iso);
-  const weekly = itemsOf(w, 'weekly');
+
+  const sub = (title, body, extra = '') => `<div class="subhead"><h3>${title}</h3>${extra}</div>${body}`;
+  const routine = [
+    sub('Daily', daily || '<p class="muted pad small">No daily routines yet. <a href="#/new/daily">Add one</a></p>', '<span class="hint">Tap to log · hold for minutes</span>'),
+    sub('Weekly', weekly.length ? weekly.map(([id, it]) => periodRowHtml(wk, id, it)).join('') : '<p class="muted pad small">No weekly routines yet. <a href="#/new/weekly">Add one</a></p>'),
+    sub('Periodically',
+      (dueNow.map(([id, it]) => todayDailyRow(wk, ti, id, it, `${fmtPlan(it)} · every ${everyLabel(it.everyDays || 7)} · ${periodicSub(id, it)}`)).join('') ||
+        (periodic.length ? '<p class="muted pad small">Nothing due today.</p>' : '<p class="muted pad small">Things you do every few days or weeks, e.g. laundry. <a href="#/new/periodic">Add one</a></p>')) +
+      (notDue.length ? `<div class="later">${notDue.map(([id, it]) => `<a href="#/c/${id}">${escapeHtml(it.name)} <small>${periodicSub(id, it)}</small></a>`).join('')}</div>` : '')),
+  ].join('');
 
   return `
     <header class="top">
@@ -682,20 +770,18 @@ function todayTabHtml() {
         <div class="stat right"><b>${fmtH(ds.actual)} <small>/ ${fmtH(ds.planned)}</small></b><span>today actual / planned</span></div>
       </div>
       <div class="hbar"><i style="width:${ds.planned ? Math.min(100, (ds.actual / ds.planned) * 100) : 0}%"></i></div>
-      <div class="pace"><a href="#/week">This week: ${fmtH(ws.actual)} of ${fmtH(ws.planned)} · ${Math.round(ws.pct * 100)}% ticked ›</a></div>
+      <div class="pace"><a href="#/routine">This week: ${fmtH(ws.actual)} of ${fmtH(ws.planned)} · ${Math.round(ws.pct * 100)}% ticked ›</a></div>
     </header>
     ${reviewBannerHtml()}
-    ${schedToday.length ? `<section class="card"><div class="card-head"><h2>Schedule</h2><a class="txt-btn" href="#/cal">Calendar ›</a></div>
-      ${scheduleRowsHtml(schedToday)}</section>` : ''}
-    ${appsTodayCardHtml()}
-    <section class="card">
-      <div class="card-head"><h2>Daily</h2><span class="hint">Tap to log · hold for minutes</span></div>
-      ${daily || '<p class="muted pad">No daily commitments yet.</p>'}
+    <section class="card" data-section="Routine">
+      <div class="card-head"><h2>Routine</h2><a class="txt-btn" href="#/routine">Record ›</a></div>
+      ${routine}
     </section>
-    ${onceToday.length ? `<section class="card"><div class="card-head"><h2>Today only</h2></div>
-      ${onceToday.map(([id, it]) => periodRowHtml(wk, id, it)).join('')}</section>` : ''}
-    ${weekly.length ? `<section class="card"><div class="card-head"><h2>This week</h2><span class="hint">Weekly goals</span></div>
-      ${weekly.map(([id, it]) => periodRowHtml(wk, id, it)).join('')}</section>` : ''}
+    <section class="card" data-section="Today only">
+      <div class="card-head"><h2>Today only</h2><a class="txt-btn" href="#/new/once">+ Add</a></div>
+      ${onceToday.length ? onceToday.map(([id, it]) => periodRowHtml(wk, id, it)).join('') : '<p class="muted pad small">No one-off tasks today.</p>'}
+    </section>
+    ${appsTodayCardHtml()}
     ${tbcTodayHtml()}
     ${onceLater.length ? `<section class="card"><div class="card-head"><h2>Coming up this week</h2></div>
       ${onceLater.map(([id, it]) => periodRowHtml(wk, id, it, { showDate: true })).join('')}</section>` : ''}`;
@@ -708,19 +794,6 @@ function tbcTodayHtml() {
   return `<details class="card fold"><summary>Date to be confirmed (${list.length})</summary>
     ${list.map((c) => `<a class="crow" href="#/c/${c.id}"><div class="ctext"><div class="n">${escapeHtml(c.name)}</div>
       <div class="sub">${escapeHtml(c.section)} · tap to set a date</div></div><span class="chev">›</span></a>`).join('')}</details>`;
-}
-
-// Compact schedule list: time · name · place. Past sessions are dimmed.
-function scheduleRowsHtml(entries) {
-  const now = new Date();
-  const nowHM = `${pad(now.getHours())}:${pad(now.getMinutes())}`;
-  return entries.map(([id, it]) => {
-    const past = it.date < todayISO() || (it.date === todayISO() && (it.endTime || it.time || '99:99') <= nowHM);
-    const where = locationById(id);
-    return `<div class="srow ${past ? 'past' : ''}" data-open="#/c/${id}">
-      <span class="stime">${it.time ? escapeHtml(timeRange(it)) : 'All day'}</span>
-      <span class="sname">${escapeHtml(it.name)}${where ? `<small>${escapeHtml(where)}</small>` : ''}</span></div>`;
-  }).join('');
 }
 
 // ---------- Week tab ----------
@@ -739,17 +812,17 @@ function weekTabHtml() {
     <header class="top">
       ${topBar({
         left: '<button class="icon-btn" data-act="prev" aria-label="Previous week">‹</button>',
-        label: weekLabel(viewKey) + (isCurrent ? '' : ' · tap for this week'),
+        label: 'Routine · ' + weekLabel(viewKey) + (isCurrent ? '' : ' · tap for this week'),
         title: weekRange(viewKey),
         titleAct: `data-act="thisweek" ${isCurrent ? 'disabled' : ''}`,
         right: '<button class="icon-btn" data-act="next" aria-label="Next week">›</button>' + menuBtn,
       })}
-      ${w ? statsHtml(weekStats(w), { showPace: isCurrent }) : ''}
+      ${w ? statsHtml(weekStats(w, { routine: true }), { showPace: isCurrent }) : ''}
     </header>`;
   const hasRecurring = w && Object.values(w.items).some((it) => it.freq !== 'once');
   const startCard = !hasRecurring && !isLiveWeek(viewKey) ? `
     <section class="card empty">
-      <p>No record of daily/weekly commitments for this week.</p>
+      <p>No record of routines for this week.</p>
       <button class="btn primary" data-act="start-week">Fill it in with current commitments</button>
     </section>` : '';
   if (!w) return header + startCard;
@@ -768,18 +841,48 @@ function weekTabHtml() {
         </div>`;
     }
   }
-  const once = itemsOf(w, 'once').filter(isTask);
   const weekly = itemsOf(w, 'weekly');
+  const periodic = itemsOf(w, 'periodic');
+  const pgrid = periodic.map(([id, it]) => {
+    const times = it.ticks.filter(Boolean).length;
+    return `
+      <div class="row ${it.archived ? 'archived' : ''}">
+        <a class="name" href="#/c/${id}"><span class="n">${escapeHtml(it.name)}</span>
+          <span class="sub">every ${everyLabel(it.everyDays || 7)} · ${times}× this week${isCurrent ? ` · ${periodicSub(id, it)}` : ''}</span></a>
+        ${dayCellsHtml(viewKey, id, it)}
+      </div>`;
+  }).join('');
   return header + startCard + (grid ? `
     <section class="card daily">
       <div class="card-head"><h2>Daily</h2><span class="hint">Tap to log · hold for minutes</span></div>
       ${dayHeadHtml(viewKey)}${grid}
     </section>` : '') +
-    (once.length ? `<section class="card"><div class="card-head"><h2>One-off</h2></div>
-      ${once.map(([id, it]) => periodRowHtml(viewKey, id, it, { showDate: true })).join('')}</section>` : '') +
     (weekly.length ? `<section class="card weekly"><div class="card-head"><h2>Weekly</h2><span class="hint">± logs progress</span></div>
       ${[...groupBySection(weekly)].map(([s, es]) => `<div class="sec">${escapeHtml(s)}</div>` +
-        es.map(([id, it]) => periodRowHtml(viewKey, id, it)).join('')).join('')}</section>` : '');
+        es.map(([id, it]) => periodRowHtml(viewKey, id, it)).join('')).join('')}</section>` : '') +
+    (pgrid ? `<section class="card daily">
+      <div class="card-head"><h2>Periodically</h2><span class="hint">Tick the day you did it</span></div>
+      ${dayHeadHtml(viewKey)}${pgrid}
+    </section>` : '');
+}
+
+// ---------- Work Buddy tab ----------
+// Placeholder until the accountability-partner design is settled.
+function buddyTabHtml() {
+  return `
+    <header class="top">${topBar({ label: 'Coming soon', title: 'Work Buddy', right: menuBtn })}</header>
+    <section class="card" data-section="Work Buddy">
+      <div class="card-head"><h2>Partner up</h2></div>
+      <p class="pad">Do a routine together with a real person, e.g. an online test every day.</p>
+      <ol class="steps">
+        <li>Pick a routine and send your buddy an invite link. They don't need an account.</li>
+        <li>Each of you ticks your own day, with an optional note (which test, your score).</li>
+        <li>A shared streak grows only on days you <b>both</b> finish.</li>
+        <li>If one of you hasn't finished by the evening, the other can send a nudge.</li>
+        <li>Sunday: a weekly review of both of your records.</li>
+      </ol>
+      <p class="muted small pad">Not built yet.</p>
+    </section>`;
 }
 
 // ---------- Calendar tab ----------
@@ -845,18 +948,32 @@ function calendarTabHtml() {
 
   // Daily commitments as tick-able brackets: highlighted until done, faded and crossed out once
   // the day has passed without them.
+  // Periodic routines show on the day they are due (or were done).
+  const routineOf = (d, i) => !w ? [] : [...itemsOf(w, 'daily'),
+    ...itemsOf(w, 'periodic').filter(([id, it]) => periodicOn(id, it, d))];
   const dailyChip = (d, i) => {
-    if (!w) return '';
-    const list = itemsOf(w, 'daily');
+    const list = routineOf(d, i);
     if (!list.length) return '';
     return `<div class="dpills">${list.map(([id, it]) => {
       const done = dayDone(it, i);
       const st = done ? 'done' : d < today ? 'missed' : 'pending';
-      const prog = it.kind === 'counter' ? `<small>${round2(it.counts[i])}/${round2(it.target)}</small>` : '';
+      const prog = it.kind === 'counter' ? `<small>${round2(it.counts[i])}/${round2(it.target)}</small>` : it.freq === 'periodic' ? '<small>↻</small>' : '';
       return `<button class="dpill ${st}" data-cell="${wk}:${id}:${i}" aria-label="${escapeHtml(cellLabel(it, i))}">
         <span class="dbox">${done ? CHECK : ''}</span><span class="dname">${escapeHtml(it.name)}</span>${prog}</button>`;
     }).join('')}</div>`;
   };
+  // The selected day's to-dos: routine brackets, then that day's one-off tasks.
+  const si = days.indexOf(calViewDay);
+  const dayOnce = once.filter(isTask).filter(([, it]) => it.date === calViewDay);
+  const dayTitle = calViewDay === today ? 'Today' : fmtDay(parseISO(calViewDay), { weekday: 'long', day: 'numeric', month: 'short' });
+  const dayCard = si < 0 ? '' : `
+    <section class="card" data-section="This day">
+      <div class="card-head"><h2>${dayTitle}</h2><span class="hint">${calViewDay === today ? fmtShort(today) : ''}</span></div>
+      <div class="subhead"><h3>Routine</h3></div>
+      ${dailyChip(calViewDay, si) || '<p class="muted pad small">No routines this day.</p>'}
+      <div class="subhead"><h3>Today only</h3></div>
+      ${dayOnce.length ? dayOnce.map(([id, it]) => periodRowHtml(wk, id, it)).join('') : '<p class="muted pad small">No one-off tasks this day.</p>'}
+    </section>`;
 
   const cols = days.map((d, i) => {
     const evs = layoutDay(timed[d]).map((e) => {
@@ -887,7 +1004,7 @@ function calendarTabHtml() {
         <span>${escapeHtml(it.name)}</span></div>`; }).join('')}
     </div>`).join('');
 
-  const heads = days.map((d, i) => `<div class="chead ${d === today ? 'today' : ''}"><span>${DAY_NAMES[i]}</span><b>${parseISO(d).getDate()}</b></div>`).join('');
+  const heads = days.map((d, i) => `<button class="chead ${d === today ? 'today' : ''} ${d === calViewDay ? 'sel' : ''}" data-act="cal-day" data-date="${d}"><span>${DAY_NAMES[i]}</span><b>${parseISO(d).getDate()}</b></button>`).join('');
   const isThisWeek = wk === currentWeekKey();
   const nothing = !all.length && !days.some((d) => untimed[d].length);
 
@@ -902,14 +1019,16 @@ function calendarTabHtml() {
       })}
       <div class="cstrip">${strip}</div>
     </header>
-    <section class="card cal">
+    ${dayCard}
+    <section class="card cal" data-section="Schedule">
+      <div class="card-head"><h2>Schedule</h2><a class="txt-btn" href="#/calendar">Calendars ›</a></div>
       <div class="cgrid-head"><div class="ctimes-gap"></div>${heads}</div>
       <div class="call-row"><div class="ctimes-gap small muted">all day</div>${allDay}</div>
       <div class="cgrid">
         <div class="ctimes">${hours.map((h) => `<div style="height:${HOUR_PX}px">${pad(h)}:00</div>`).join('')}</div>
         <div class="ccols" style="height:${gridH}px;background-size:100% ${HOUR_PX}px">${cols}</div>
       </div>
-      ${nothing ? `<p class="muted small pad center">No events this week. Connect a calendar in <a href="#/calendar">Commitments → Calendars</a>, or add a one-off with a time.</p>` : ''}
+      ${nothing ? `<p class="muted small pad center">No events this week. Connect a calendar in <a href="#/calendar">All commitments → Calendars</a>, or add a one-off with a time.</p>` : ''}
     </section>`;
 }
 
@@ -1288,6 +1407,7 @@ function metaLine(c) {
   const parts = [c.kind === 'counter' ? 'Counter' : 'Task', targetLabel(c)];
   if (c.freq === 'once' && c.date) parts.unshift(...[fmtShort(c.date), timeRange(c)].filter(Boolean));
   if (c.freq === 'once' && !c.date) parts.unshift('Date TBC');
+  if (c.freq === 'periodic' && !c.archived) parts.push(periodicSub(c.id, c));
   if (c.source) parts.push('📅');
   return parts.join(' · ');
 }
@@ -1315,11 +1435,12 @@ function commitmentsTabHtml() {
   const archived = state.commitments.filter((c) => c.archived);
   return `
     <header class="top">
-      ${topBar({ left: `<button class="txt-btn" data-act="reorder">${reorderMode ? 'Done' : 'Reorder'}</button>`, label: `${state.commitments.filter((c) => !c.archived).length} active`, title: 'Commitments', right: menuBtn })}
+      ${topBar({ left: `<button class="txt-btn" data-act="reorder">${reorderMode ? 'Done' : 'Reorder'}</button>`, label: `${state.commitments.filter((c) => !c.archived).length} active`, title: 'All commitments', right: menuBtn })}
     </header>
     ${reviewBannerHtml()}
     ${block('daily', 'Daily', sortedCommitments('daily'))}
     ${block('weekly', 'Weekly', sortedCommitments('weekly'))}
+    ${block('periodic', 'Periodically', sortedCommitments('periodic'))}
     ${block('once', 'One-off', upcoming)}
     ${applicationsCardHtml()}
     ${calendarsCardHtml()}
@@ -1370,7 +1491,11 @@ function detailPageHtml(id) {
   const it = w && w.items[id];
 
   let progress = '';
-  if (it && c.freq === 'daily') {
+  if (it && c.freq === 'periodic') {
+    progress = `<div class="card-head"><h2>This week</h2><span class="hint">${periodicSub(id, c)}</span></div>
+      ${dayHeadHtml(wk)}<div class="row">${dayCellsHtml(wk, id, it)}</div>
+      <p class="muted small pad">Last done: ${lastDoneISO(id, addDaysISO(todayISO(), 1)) ? fmtShort(lastDoneISO(id, addDaysISO(todayISO(), 1))) : 'not yet'}</p>`;
+  } else if (it && c.freq === 'daily') {
     const daysDone = it.ticks.filter((_, i) => dayDone(it, i)).length;
     const hrs = it.ticks.reduce((s, _, i) => s + dayHours(it, i), 0);
     progress = `<div class="card-head"><h2>This week</h2><span class="hint">${daysDone}/7 days · ${fmtH(hrs)} of ${fmtH(plannedHours(it) * 7)}</span></div>
@@ -1408,7 +1533,8 @@ function detailPageHtml(id) {
     .sort((a, b) => (a.start < b.start ? 1 : -1)).slice(0, 8)
     .map((hw) => {
       const h = hw.items[id];
-      const txt = h.freq === 'daily'
+      const txt = h.freq === 'periodic' ? `${h.ticks.filter(Boolean).length}× done`
+        : h.freq === 'daily'
         ? `${h.ticks.filter((_, i) => dayDone(h, i)).length}/7 days · ${fmtH(h.ticks.reduce((s, _, i) => s + dayHours(h, i), 0))}`
         : h.kind === 'counter' ? countLabel(h, h.count) : h.done ? 'Done' : 'Not done';
       return `<div class="hrow"><span>w/c ${fmtDay(parseISO(hw.start), { day: 'numeric', month: 'short' })}</span><span>${txt}</span></div>`;
@@ -1461,7 +1587,14 @@ function editPageHtml() {
       data-freq="${c.freq}" data-kind="${c.kind}" data-hourunit="${isHourUnit(c.unit)}" data-tbc="${!!c.tbc}" data-unit="${c.timeUnit === 'min' ? 'min' : 'h'}">
       <label class="f">Name<input name="name" required value="${escapeHtml(c.name)}" placeholder="e.g. Practice questions"></label>
       <label class="f">Section<input name="section" list="sections" value="${escapeHtml(c.section === 'Other' && isNew ? '' : c.section)}" placeholder="e.g. Career prep"></label>
-      <div class="f">How often<div class="seg">${radio('freq', 'daily', 'Daily', c.freq)}${radio('freq', 'weekly', 'Weekly', c.freq)}${radio('freq', 'once', 'One-off', c.freq)}</div></div>
+      <div class="f">How often<div class="seg seg4">${radio('freq', 'daily', 'Daily', c.freq)}${radio('freq', 'weekly', 'Weekly', c.freq)}${radio('freq', 'periodic', 'Periodic', c.freq)}${radio('freq', 'once', 'One-off', c.freq)}</div></div>
+      <div class="f only-periodic"><span>Repeat every</span>
+        <div class="time-row">
+          <input name="everyN" type="number" inputmode="numeric" min="1" max="365" step="1" value="${(c.everyDays || 7) % 7 === 0 ? (c.everyDays || 7) / 7 : c.everyDays}" aria-label="Repeat every">
+          <div class="seg">${radio('everyUnit', 'd', 'days', (c.everyDays || 7) % 7 === 0 ? 'w' : 'd')}${radio('everyUnit', 'w', 'weeks', (c.everyDays || 7) % 7 === 0 ? 'w' : 'd')}</div>
+        </div>
+        <span class="help">Comes back that long after you last did it. Missed ones stay due until ticked.</span></div>
+      <label class="f only-periodic">First due<input type="date" name="firstDue" value="${c.freq === 'periodic' && c.date ? c.date : todayISO()}"></label>
       ${c.source ? '' : `<label class="toggle-row only-once"><input type="checkbox" name="tbc" ${c.tbc ? 'checked' : ''}>
         <span>Date to be confirmed<small>Keep it on your list without a date; set one when it's fixed.</small></span></label>`}
       <label class="f only-once tbc-hide">Date<input type="date" name="date" value="${c.date || todayISO()}"></label>
@@ -1470,7 +1603,7 @@ function editPageHtml() {
         <label class="f">End time<input type="time" name="endTime" value="${c.endTime || ''}"></label>
       </div>
       ${c.source ? '<p class="help">📅 Synced from your calendar: date, time and name will follow the calendar.</p>' : ''}
-      <div class="f">Type<div class="seg">${radio('kind', 'task', 'Task', c.kind)}${radio('kind', 'counter', 'Counter', c.kind)}</div>
+      <div class="f kind-field">Type<div class="seg">${radio('kind', 'task', 'Task', c.kind)}${radio('kind', 'counter', 'Counter', c.kind)}</div>
         <span class="help only-task">Done or not done, e.g. a lecture, seminar, coffee chat or study block.</span>
         <span class="help only-counter">Count towards a number, e.g. send 3 emails or log 15 hours.</span></div>
       <div class="f3 only-counter">
@@ -1478,7 +1611,7 @@ function editPageHtml() {
         <label class="f">Unit<input name="unit" value="${escapeHtml(c.unit)}" placeholder="emails / h"></label>
         <label class="f">Step<input name="step" type="number" inputmode="decimal" min="0" step="any" value="${round2(c.step)}"></label>
       </div>
-      <div class="f only-time"><span>Planned time <span class="per-day">per day</span><span class="per-week">per week</span><span class="per-once">in total</span></span>
+      <div class="f only-time"><span>Planned time <span class="per-day">per day</span><span class="per-week">per week</span><span class="per-once">in total</span><span class="per-periodic">each time</span></span>
         <div class="time-row">
           <input name="hours" type="number" inputmode="decimal" min="0" step="${c.timeUnit === 'min' ? 5 : 0.25}" value="${c.timeUnit === 'min' ? Math.round(c.hours * 60) : round2(c.hours)}" aria-label="Planned time">
           <div class="seg">${radio('timeUnit', 'min', 'minutes', c.timeUnit === 'min' ? 'min' : 'h')}${radio('timeUnit', 'h', 'hours', c.timeUnit === 'min' ? 'min' : 'h')}</div>
@@ -1501,13 +1634,15 @@ function saveCommitmentForm(form) {
   const name = String(f.get('name') || '').trim();
   if (!name) { toast('Give it a name'); return; }
   const freq = FREQS.includes(f.get('freq')) ? f.get('freq') : 'daily';
-  const kind = f.get('kind') === 'counter' ? 'counter' : 'task';
+  const kind = f.get('kind') === 'counter' && freq !== 'periodic' ? 'counter' : 'task';
+  const everyDays = Math.min(365, Math.max(1, Math.round(num(f.get('everyN'), 1)) * (f.get('everyUnit') === 'w' ? 7 : 1)));
   const unit = kind === 'counter' ? String(f.get('unit') || '').trim() : '';
   const target = kind === 'counter' ? num(f.get('target'), 1) : 1;
   const fields = {
     name, freq, kind, unit, target,
     section: String(f.get('section') || '').trim() || 'Other',
-    date: freq === 'once' && f.get('tbc') !== 'on' ? (f.get('date') || todayISO()) : null,
+    date: freq === 'periodic' ? (f.get('firstDue') || todayISO()) : freq === 'once' && f.get('tbc') !== 'on' ? (f.get('date') || todayISO()) : null,
+    everyDays,
     tbc: freq === 'once' && f.get('tbc') === 'on',
     time: freq === 'once' && f.get('tbc') !== 'on' ? validTime(f.get('time')) : null,
     endTime: freq === 'once' && f.get('tbc') !== 'on' ? validTime(f.get('endTime')) : null,
@@ -1915,7 +2050,7 @@ function reviewPageHtml() {
       </section>`).join('')}
       <div class="sticky-actions">
         <button class="btn primary full" type="submit">Save</button>
-        <p class="help center"><b>Schedule</b>: shown on your calendar (lectures, classes). <b>Task</b>: something to tick off (a coffee chat). Decided once per series; change it anytime in Commitments → Calendars.</p>
+        <p class="help center"><b>Schedule</b>: shown on your calendar (lectures, classes). <b>Task</b>: something to tick off (a coffee chat). Decided once per series; change it anytime in All commitments → Calendars.</p>
       </div>
     </form>`;
 }

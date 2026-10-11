@@ -29,7 +29,7 @@ struct CommitmentsWidget: Widget {
         StaticConfiguration(kind: "CommitmentsWidget", provider: Provider()) { entry in
             CommitmentsWidgetView(entry: entry)
         }
-        .configurationDisplayName("Commitments")
+        .configurationDisplayName("I Commit!")
         .description("Today's progress and what's left. Click to open the app.")
         .supportedFamilies([.systemSmall, .systemMedium, .systemLarge])
     }
@@ -49,7 +49,7 @@ struct CommitmentsWidgetView: View {
         if let snapshot = entry.snapshot {
             let model = TodayModel(snapshot, now: entry.date)
             if model.newWeek {
-                Message(title: "New week 🎉", text: "Open Commitments to start this week.")
+                Message(title: "New week 🎉", text: "Open I Commit! to start this week.")
             } else {
                 switch family {
                 case .systemSmall: SmallView(m: model)
@@ -58,7 +58,7 @@ struct CommitmentsWidgetView: View {
                 }
             }
         } else {
-            Message(title: "Commitments", text: "Open the Commitments app once to set up this widget.")
+            Message(title: "I Commit!", text: "Open the I Commit! app once to set up this widget.")
         }
     }
 }

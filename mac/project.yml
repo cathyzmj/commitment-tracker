@@ -27,7 +27,8 @@ targets:
     info:
       path: App/Info.plist
       properties:
-        CFBundleDisplayName: Commitments
+        CFBundleDisplayName: "I Commit!"
+        CFBundleName: "I Commit!"
         LSApplicationCategoryType: public.app-category.productivity
         AppGroupID: $(TeamIdentifierPrefix)$(BUNDLE_ID_PREFIX).commitments
         AppHost: $(APP_HOST)
@@ -57,7 +58,8 @@ targets:
     info:
       path: Widget/Info.plist
       properties:
-        CFBundleDisplayName: Commitments
+        CFBundleDisplayName: "I Commit!"
+        CFBundleName: "I Commit!"
         AppGroupID: $(TeamIdentifierPrefix)$(BUNDLE_ID_PREFIX).commitments
         NSExtension:
           NSExtensionPointIdentifier: com.apple.widgetkit-extension
