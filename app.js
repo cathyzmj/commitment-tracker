@@ -192,6 +192,7 @@ function flush() {
   const changed = stampChanges();
   writeState().catch((e) => toast('Could not save: ' + e.message));
   scheduleWidgetPush();
+  buddyAutoTick();
   if (changed) scheduleSync();
 }
 
@@ -218,6 +219,7 @@ function defaultState() {
     widget: { enabled: false, token: null, lastPush: null, lastError: null },
     sync: freshSync(),
     apps: { items: [], fetchedAt: null, error: null, setup: false },
+    trees: [], tests: [], buddy: null, testRoutine: null,
     lastBackup: null,
   };
 }
@@ -290,6 +292,9 @@ function migrate(s) {
     lastSync: sy.lastSync || null, lastError: sy.lastError || null,
   };
   if (!s.sync.enabled) s.sync = freshSync();
+  s.trees = (Array.isArray(s.trees) ? s.trees : []).map(normaliseTree);
+  s.tests = (Array.isArray(s.tests) ? s.tests : []).map(normaliseTest);
+  s.buddy = s.buddy && /^[A-Za-z0-9_-]{32,128}$/.test(s.buddy.token || '') ? { token: s.buddy.token, pactId: String(s.buddy.pactId || ''), commitmentId: s.buddy.commitmentId || null } : null;
   s.calendars = {
     feeds: feeds.filter((f) => f && f.url).map((f) => ({
       id: f.id || uid(), name: String(f.name || 'Calendar'), url: String(f.url), section: String(f.section || 'Calendar'),
@@ -535,11 +540,16 @@ function parseHash() {
   if (a === 'calendar') return { tab: 'commitments', page: b === 'review' ? 'review' : 'calendar' };
   if (a === 'new') return { tab: 'commitments', id: 'new', edit: true, freq: FREQS.includes(b) ? b : 'daily' };
   if (a === 'week') return { tab: 'routine' };
+  if (a === 'knowledge') return b ? { tab: 'routine', page: 'tree-edit', treeId: b } : { tab: 'routine', page: 'knowledge' };
+  if (a === 'tests') return { tab: 'routine', page: 'tests', testId: b || null };
+  if (a === 'join') return { tab: 'buddy', invite: /^[a-z0-9]{10}$/i.test(b || '') ? b.toLowerCase() : '' };
   return { tab: ['today', 'routine', 'cal', 'buddy', 'commitments'].includes(a) ? a : 'today' };
 }
 let route = parseHash();
 window.addEventListener('hashchange', () => {
   route = parseHash();
+  treeDraft = null;
+  if (route.tab === 'buddy') refreshBuddy();
   if (route.tab === 'apps') {
     if (route.day) { appsDay = route.day; appsMonth = route.day.slice(0, 7); }
     refreshApps();
@@ -563,6 +573,9 @@ function render() {
   else if (route.page === 'widget') html = widgetPageHtml();
   else if (route.page === 'calendar') html = calendarPageHtml();
   else if (route.page === 'review') html = reviewPageHtml();
+  else if (route.page === 'knowledge') html = knowledgePageHtml();
+  else if (route.page === 'tree-edit') html = treeEditHtml();
+  else if (route.page === 'tests') html = testsPageHtml();
   else if (route.id && route.edit) html = editPageHtml();
   else if (route.id) html = detailPageHtml(route.id);
   else if (route.tab === 'routine') html = weekTabHtml();
@@ -624,6 +637,11 @@ function highlightSection() {
 }
 document.addEventListener('toggle', (e) => {
   const d = e.target;
+  if (d.dataset && d.dataset.tnode) {
+    const id = d.dataset.tnode, top = d.dataset.depth === '0';
+    if (top) { if (d.open) treeOpen.delete(`-${id}`); else treeOpen.add(`-${id}`); } else if (d.open) treeOpen.add(id); else treeOpen.delete(id);
+    return;
+  }
   if (d.dataset && d.dataset.fold) { if (d.open) appsExpanded.add(`open:${d.dataset.fold}`); else appsExpanded.delete(`open:${d.dataset.fold}`); }
 }, true);
 let scrollTick = false;
@@ -743,6 +761,10 @@ function todayTabHtml() {
     for (const [id, it] of entries) {
       const daysDone = it.ticks.filter((_, i) => dayDone(it, i)).length;
       daily += todayDailyRow(wk, ti, id, it, `${targetLabel(it)} · ${daysDone}/7 this week`);
+      if (id === state.testRoutine) {
+        const n = state.tests.filter((x) => x.date === iso).length;
+        daily += `<a class="trow-extra" href="#/tests">${n ? `${n} result${n === 1 ? '' : 's'} logged today · ` : ''}+ Log a result</a>`;
+      }
     }
   }
   const weekly = itemsOf(w, 'weekly');
@@ -771,6 +793,7 @@ function todayTabHtml() {
       </div>
       <div class="hbar"><i style="width:${ds.planned ? Math.min(100, (ds.actual / ds.planned) * 100) : 0}%"></i></div>
       <div class="pace"><a href="#/routine">This week: ${fmtH(ws.actual)} of ${fmtH(ws.planned)} · ${Math.round(ws.pct * 100)}% ticked ›</a></div>
+      ${buddyTodayLine()}
     </header>
     ${reviewBannerHtml()}
     <section class="card" data-section="Routine">
@@ -817,6 +840,7 @@ function weekTabHtml() {
         titleAct: `data-act="thisweek" ${isCurrent ? 'disabled' : ''}`,
         right: '<button class="icon-btn" data-act="next" aria-label="Next week">›</button>' + menuBtn,
       })}
+      ${routineNav('record')}
       ${w ? statsHtml(weekStats(w, { routine: true }), { showPace: isCurrent }) : ''}
     </header>`;
   const hasRecurring = w && Object.values(w.items).some((it) => it.freq !== 'once');
@@ -864,25 +888,6 @@ function weekTabHtml() {
       <div class="card-head"><h2>Periodic</h2><span class="hint">Tick the day you did it</span></div>
       ${dayHeadHtml(viewKey)}${pgrid}
     </section>` : '');
-}
-
-// ---------- Work Buddy tab ----------
-// Placeholder until the accountability-partner design is settled.
-function buddyTabHtml() {
-  return `
-    <header class="top">${topBar({ label: 'Coming soon', title: 'Work Buddy', right: menuBtn })}</header>
-    <section class="card" data-section="Work Buddy">
-      <div class="card-head"><h2>Partner up</h2></div>
-      <p class="pad">Do a routine together with a real person, e.g. an online test every day.</p>
-      <ol class="steps">
-        <li>Pick a routine and send your buddy an invite link. They don't need an account.</li>
-        <li>Each of you ticks your own day, with an optional note (which test, your score).</li>
-        <li>A shared streak grows only on days you <b>both</b> finish.</li>
-        <li>If one of you hasn't finished by the evening, the other can send a nudge.</li>
-        <li>Sunday: a weekly review of both of your records.</li>
-      </ol>
-      <p class="muted small pad">Not built yet.</p>
-    </section>`;
 }
 
 // ---------- Calendar tab ----------
@@ -1466,6 +1471,475 @@ function moveCommitment(id, dir) {
   renumber();
 }
 
+// ---------- Routine sub-pages: Record · Knowledge · Tests ----------
+function routineNav(on) {
+  const a = (href, key, label) => `<a href="${href}" class="${on === key ? 'on' : ''}" ${on === key ? 'aria-current="page"' : ''}>${label}</a>`;
+  return `<nav class="subnav">${a('#/routine', 'record', 'Record')}${a('#/knowledge', 'knowledge', 'Knowledge')}${a('#/tests', 'tests', 'Tests')}</nav>`;
+}
+const routineChoices = () => state.commitments.filter((c) => !c.archived && c.freq !== 'once').sort((a, b) => a.order - b.order);
+const routineSelect = (name, cur, empty = 'None') => `<select name="${name}"><option value="">${empty}</option>${routineChoices()
+  .map((c) => `<option value="${c.id}" ${c.id === cur ? 'selected' : ''}>${escapeHtml(c.name)} · ${FREQ_LABEL[c.freq]}</option>`).join('')}</select>`;
+async function copyText(text) {
+  try { await navigator.clipboard.writeText(text); toast('Copied'); }
+  catch { window.prompt('Copy this:', text); }
+}
+
+// ---------- Knowledge trees ----------
+// A course or self-study plan as a tree of topics; light up each topic as you learn it.
+// The outline is drafted outside the app (e.g. Claude reads the course page), checked, then pasted in.
+// Node: { id, t: title, k: children, lit, at: date lit }.
+function parseOutline(text) {
+  const root = [];
+  const stack = [{ indent: -1, kids: root }];
+  for (const raw of String(text || '').split(/\r?\n/)) {
+    const line = raw.replace(/\t/g, '  ');
+    const t = line.trim().replace(/^([-*•+]|\d+[.)]|#+)\s+/, '').replace(/\*\*/g, '').trim();
+    if (!t) continue;
+    const indent = line.match(/^ */)[0].length;
+    while (stack.length > 1 && stack[stack.length - 1].indent >= indent) stack.pop();
+    const node = { id: uid(), t: t.slice(0, 140), k: [] };
+    stack[stack.length - 1].kids.push(node);
+    stack.push({ indent, kids: node.k });
+  }
+  return root;
+}
+const outlineOf = (nodes, depth = 0) => nodes.map((n) => `${'  '.repeat(depth)}${n.t}\n${outlineOf(n.k, depth + 1)}`).join('');
+const treeLeaves = (nodes) => nodes.flatMap((n) => (n.k.length ? treeLeaves(n.k) : [n]));
+function treeProgress(nodes) {
+  const leaves = treeLeaves(nodes);
+  const lit = leaves.filter((n) => n.lit).length;
+  const weekAgo = addDaysISO(todayISO(), -6);
+  return { lit, total: leaves.length, pct: leaves.length ? lit / leaves.length : 0, week: leaves.filter((n) => n.lit && n.at >= weekAgo).length };
+}
+function findNode(nodes, id) {
+  for (const n of nodes) { if (n.id === id) return n; const f = findNode(n.k, id); if (f) return f; }
+  return null;
+}
+// Keeps what was already lit when an outline is edited (matched by the path of titles).
+function carryLit(fresh, old) {
+  const lit = new Map();
+  const walk = (ns, path) => ns.forEach((n) => { const p = `${path}/${n.t.toLowerCase()}`; if (n.lit) lit.set(p, n.at); walk(n.k, p); });
+  walk(old, '');
+  const apply = (ns, path) => ns.forEach((n) => { const p = `${path}/${n.t.toLowerCase()}`; if (lit.has(p) && !n.k.length) { n.lit = true; n.at = lit.get(p); } apply(n.k, p); });
+  apply(fresh, '');
+  return fresh;
+}
+function normaliseNodes(ns, depth = 0) {
+  if (!Array.isArray(ns) || depth > 8) return [];
+  return ns.filter((n) => n && n.t).map((n) => ({ id: String(n.id || uid()), t: String(n.t).slice(0, 140), k: normaliseNodes(n.k, depth + 1),
+    ...(n.lit ? { lit: true, at: /^\d{4}-\d{2}-\d{2}$/.test(n.at || '') ? n.at : todayISO() } : {}) }));
+}
+const normaliseTree = (t) => ({ id: String(t.id || uid()), name: String(t.name || 'Knowledge tree'), source: String(t.source || ''),
+  commitmentId: t.commitmentId || null, created: t.created || todayISO(), nodes: normaliseNodes(t.nodes) });
+
+const treeOpen = new Set(); // branches folded open this session (top level starts open)
+function treeNodesHtml(tree, nodes, depth = 0) {
+  return `<ul class="ktree">${nodes.map((n) => {
+    if (!n.k.length) {
+      return `<li><button class="kleaf ${n.lit ? 'lit' : ''}" data-act="tree-lit" data-tree="${tree.id}" data-node="${n.id}" aria-pressed="${!!n.lit}">
+        <span class="kdot"></span><span class="kt">${escapeHtml(n.t)}</span></button></li>`;
+    }
+    const p = treeProgress(n.k);
+    const open = depth === 0 ? !treeOpen.has(`-${n.id}`) : treeOpen.has(n.id);
+    return `<li class="kbranch ${p.lit === p.total ? 'lit' : ''}"><details data-tnode="${n.id}" data-depth="${depth}" ${open ? 'open' : ''}>
+      <summary><span class="kring" style="--p:${Math.round(p.pct * 100)}%"></span><b>${escapeHtml(n.t)}</b><small>${p.lit}/${p.total}</small></summary>
+      ${treeNodesHtml(tree, n.k, depth + 1)}</details></li>`;
+  }).join('')}</ul>`;
+}
+function treeCardHtml(t) {
+  const p = treeProgress(t.nodes);
+  const c = t.commitmentId && state.commitments.find((x) => x.id === t.commitmentId);
+  return `<section class="card ktree-card" data-section="${escapeHtml(t.name)}">
+    <div class="card-head"><h2>${escapeHtml(t.name)}</h2><a class="txt-btn" href="#/knowledge/${t.id}/edit">Edit</a></div>
+    <div class="kprog"><b>${Math.round(p.pct * 100)}%</b><span>lit · ${p.lit} of ${p.total} topics${p.week ? ` · <em>+${p.week} this week</em>` : ''}</span></div>
+    <div class="hbar"><i style="width:${p.pct * 100}%"></i></div>
+    ${c || t.source ? `<p class="small muted pad">${c ? `Routine: <a href="#/c/${c.id}">${escapeHtml(c.name)}</a>` : ''}${c && t.source ? ' · ' : ''}${t.source ? linkify(escapeHtml(t.source)) : ''}</p>` : ''}
+    ${treeNodesHtml(t, t.nodes)}
+  </section>`;
+}
+function knowledgePageHtml() {
+  const trees = state.trees;
+  return `
+    <header class="top">${topBar({ label: 'Routine', title: 'Knowledge', right: '<a class="txt-btn" href="#/knowledge/new">+ New</a>' })}${routineNav('knowledge')}</header>
+    ${trees.length ? trees.map(treeCardHtml).join('') : `
+      <section class="card empty">
+        <p><b>Light up what you've learned.</b></p>
+        <p class="muted small">Turn a course (e.g. your Felix technicals) or a self-study plan into a tree of topics, then tap each topic as you learn it.</p>
+        <a class="btn primary" href="#/knowledge/new">Make a knowledge tree</a>
+      </section>`}`;
+}
+let treeDraft = null; // outline preview while editing
+function treePrompt(name, source) {
+  return `Draft a knowledge tree for: ${name || '<subject or course>'}
+Source: ${source || '<course page link, syllabus, or what I am teaching myself>'}
+
+Read the source and list everything it covers, in the order it is taught.
+Reply with only an indented outline: two spaces per level, one topic per line, at most 4 levels.
+The lowest level should be topics small enough to learn in one sitting (30–90 minutes).
+No numbering, no bullets, no commentary.`;
+}
+function treeEditHtml() {
+  const isNew = route.treeId === 'new';
+  const t = isNew ? normaliseTree({ name: '', nodes: [] }) : state.trees.find((x) => x.id === route.treeId);
+  if (!t) return knowledgePageHtml();
+  const outline = treeDraft != null ? treeDraft : outlineOf(t.nodes);
+  const preview = parseOutline(outline);
+  const p = treeProgress(preview);
+  return `
+    <header class="top">${topBar({ left: '<button class="txt-btn" data-act="back">Cancel</button>', title: isNew ? 'New knowledge tree' : 'Edit tree',
+      right: '<button class="txt-btn strong" type="submit" form="tform">Save</button>' })}</header>
+    <form id="tform" class="card form" data-form="tree" data-id="${isNew ? '' : t.id}">
+      <label class="f">Name<input name="name" required value="${escapeHtml(t.name)}" placeholder="e.g. Felix technicals"></label>
+      <label class="f">What it covers<input name="source" value="${escapeHtml(t.source)}" placeholder="Course page link, or e.g. “self-study: VC fund basics”"></label>
+      <label class="f">Linked routine<span class="help">Its page shows how much of the tree is lit.</span>${routineSelect('commitmentId', t.commitmentId)}</label>
+      <div class="f"><span>1. Get a draft</span>
+        <span class="help">Copy this prompt into Claude (with the course page open or linked), then check the outline it gives you.</span>
+        <button type="button" class="btn" data-act="tree-prompt">Copy prompt for Claude</button></div>
+      <label class="f"><span>2. Paste and check the outline</span>
+        <span class="help">One topic per line; indent with two spaces to put a topic under the one above.</span>
+        <textarea name="outline" class="code" rows="12" placeholder="Accounting&#10;  Three statements&#10;    Income statement&#10;    Balance sheet">${escapeHtml(outline)}</textarea></label>
+      <div class="f"><span>Preview · ${p.total} topics${!isNew && p.lit ? ` · ${p.lit} still lit` : ''}</span>
+        <div class="tpreview">${preview.length ? treeNodesHtml({ id: 'preview' }, preview).replace(/data-act="tree-lit"/g, 'disabled') : '<p class="muted small">Nothing yet.</p>'}</div></div>
+      <button class="btn primary" type="submit">${isNew ? 'Import tree' : 'Save'}</button>
+      ${isNew ? '' : '<div class="danger"><button type="button" class="btn warn" data-act="tree-delete">Delete tree</button></div>'}
+    </form>`;
+}
+function saveTreeForm(form) {
+  const f = new FormData(form);
+  const name = String(f.get('name') || '').trim();
+  const nodes = parseOutline(f.get('outline'));
+  if (!name) { toast('Give it a name'); return; }
+  if (!nodes.length) { toast('Paste an outline first'); return; }
+  const fields = { name, source: String(f.get('source') || '').trim(), commitmentId: f.get('commitmentId') || null };
+  let t = state.trees.find((x) => x.id === form.dataset.id);
+  if (t) Object.assign(t, fields, { nodes: carryLit(nodes, t.nodes) });
+  else { t = normaliseTree({ ...fields, nodes }); state.trees.push(t); }
+  treeDraft = null;
+  save();
+  location.replace('#/knowledge');
+}
+function toggleLeaf(treeId, nodeId) {
+  const t = state.trees.find((x) => x.id === treeId);
+  const n = t && findNode(t.nodes, nodeId);
+  if (!n) return;
+  if (n.lit) { delete n.lit; delete n.at; } else { n.lit = true; n.at = todayISO(); }
+  save();
+  render();
+}
+function treesForCommitment(id) {
+  const ts = state.trees.filter((t) => t.commitmentId === id);
+  return ts.map((t) => { const p = treeProgress(t.nodes); return `<a class="crow" href="#/knowledge"><div class="ctext"><div class="n">🌳 ${escapeHtml(t.name)}</div>
+    <div class="sub">${Math.round(p.pct * 100)}% lit · ${p.lit}/${p.total} topics</div><div class="mini"><i style="width:${p.pct * 100}%"></i></div></div><span class="chev">›</span></a>`; }).join('');
+}
+
+// ---------- Online test results ----------
+// Each practice or real test is logged with type, provider, score, percentile and time, and the
+// results are summarised per type and as evidence for the Capability Radar dimensions.
+const TEST_TYPES = { numerical: 'Numerical', verbal: 'Verbal', logical: 'Logical / inductive', sjt: 'Situational judgement',
+  game: 'Game-based', personality: 'Personality / behavioural', coding: 'Coding / technical', other: 'Other' };
+const TEST_PROVIDERS = ['SHL', 'Cappfinity', 'Pymetrics', 'Talogy (Cubiks)', 'Aon (cut-e)', 'Korn Ferry', 'Saville', 'Criteria', 'Arctic Shores', 'HireVue',
+  'Practice Aptitude Tests', 'JobTestPrep', 'AssessmentDay', 'Graduate Monkey'];
+// Capability Radar dimensions (ids from the radar's profile) each test type is evidence for.
+const RADAR_DIMS = { 'finance-industry-knowledge': 'Finance & industry knowledge', judgement: 'Judgement', 'written-communication': 'Written communication',
+  'attention-to-detail': 'Attention to detail', 'composure-under-pressure': 'Composure under pressure', 'technical-ai-tooling': 'Technical & AI tooling' };
+const TEST_RADAR = { numerical: ['finance-industry-knowledge', 'attention-to-detail', 'composure-under-pressure'],
+  verbal: ['written-communication', 'attention-to-detail', 'composure-under-pressure'], logical: ['judgement', 'composure-under-pressure'],
+  sjt: ['judgement'], game: ['composure-under-pressure'], personality: [], coding: ['technical-ai-tooling', 'composure-under-pressure'], other: ['composure-under-pressure'] };
+const pctNum = (v, max) => { const n = parseFloat(v); return isFinite(n) && n >= 0 ? Math.min(max, n) : null; };
+function normaliseTest(x) {
+  const total = pctNum(x.total, 999), correct = pctNum(x.correct, 999);
+  return {
+    id: String(x.id || uid()), date: /^\d{4}-\d{2}-\d{2}$/.test(x.date || '') ? x.date : todayISO(),
+    type: TEST_TYPES[x.type] ? x.type : 'other', provider: String(x.provider || '').slice(0, 60),
+    mode: x.mode === 'real' ? 'real' : 'practice', firm: String(x.firm || '').slice(0, 60),
+    correct, total: total || null, pct: pctNum(x.pct, 100), mins: pctNum(x.mins, 600),
+    outcome: ['pass', 'fail', 'pending'].includes(x.outcome) ? x.outcome : '', note: String(x.note || '').slice(0, 500),
+  };
+}
+const testAcc = (x) => (x.total && x.correct != null ? x.correct / x.total : null);
+const testMetric = (x) => (x.pct != null ? x.pct : testAcc(x) != null ? testAcc(x) * 100 : null); // 0–100
+const ordinal = (n) => { const r = Math.round(n); const s = r % 100 >= 11 && r % 100 <= 13 ? 'th' : ({ 1: 'st', 2: 'nd', 3: 'rd' })[r % 10] || 'th'; return `${r}${s}`; };
+const avg = (a) => (a.length ? a.reduce((s, n) => s + n, 0) / a.length : null);
+function testSummary(list) {
+  const sorted = [...list].sort((a, b) => a.date.localeCompare(b.date));
+  const metrics = sorted.map(testMetric).filter((m) => m != null);
+  const pct = avg(sorted.map((x) => x.pct).filter((v) => v != null));
+  const acc = avg(sorted.map(testAcc).filter((v) => v != null));
+  const mins = avg(sorted.map((x) => x.mins).filter((v) => v != null));
+  let trend = null;
+  if (metrics.length >= 2) {
+    const h = Math.floor(metrics.length / 2);
+    const d = avg(metrics.slice(metrics.length - h)) - avg(metrics.slice(0, h));
+    trend = d >= 5 ? 'getting better' : d <= -5 ? 'slipping' : 'steady';
+  }
+  const real = sorted.filter((x) => x.mode === 'real');
+  return { n: list.length, pct, acc, mins, trend, metrics, passed: real.filter((x) => x.outcome === 'pass').length, failed: real.filter((x) => x.outcome === 'fail').length, real: real.length };
+}
+function summaryLine(label, s) {
+  const bits = [`${s.n} test${s.n === 1 ? '' : 's'}`];
+  if (s.pct != null) bits.push(`${ordinal(s.pct)} percentile on average`);
+  else if (s.acc != null) bits.push(`${Math.round(s.acc * 100)}% correct on average`);
+  if (s.trend) bits.push(s.trend);
+  if (s.real) bits.push(`real: ${s.passed} passed, ${s.failed} failed${s.real - s.passed - s.failed ? `, ${s.real - s.passed - s.failed} pending` : ''}`);
+  return `${label}: ${bits.join(', ')}`;
+}
+const byType = () => {
+  const m = new Map();
+  for (const x of state.tests) { if (!m.has(x.type)) m.set(x.type, []); m.get(x.type).push(x); }
+  return [...m.entries()].sort((a, b) => b[1].length - a[1].length);
+};
+function radarEvidence() {
+  const out = [];
+  for (const [dim, name] of Object.entries(RADAR_DIMS)) {
+    const types = byType().filter(([t]) => TEST_RADAR[t].includes(dim));
+    if (types.length) out.push({ dim, name, lines: types.map(([t, l]) => summaryLine(TEST_TYPES[t], testSummary(l))) });
+  }
+  return out;
+}
+function radarExport() {
+  const ev = radarEvidence();
+  const lines = [`Online test evidence from I Commit! (${fmtShort(todayISO())}) for /capability-radar.`,
+    'Please assess this as external evidence (mode 3) and propose any score changes before writing.', ''];
+  for (const e of ev) lines.push(`${e.name} (${e.dim}):`, ...e.lines.map((l) => `  - ${l}`));
+  lines.push('', 'Raw results (JSON):', JSON.stringify(state.tests.map(({ id, ...x }) => x)));
+  return lines.join('\n');
+}
+function sparkHtml(metrics) {
+  const last = metrics.slice(-10);
+  return `<span class="spark" aria-hidden="true">${last.map((m) => `<i style="height:${Math.max(8, m)}%"></i>`).join('')}</span>`;
+}
+// Adds one to (or ticks) the linked routine for the test's day.
+function logOnRoutine(cid, date) {
+  const c = state.commitments.find((x) => x.id === cid);
+  if (!c || date > todayISO()) return '';
+  const w = getWeek(weekOf(date), weekOf(date) === currentWeekKey());
+  const it = w && w.items[cid];
+  if (!it) return '';
+  const i = dayIndexOf(date);
+  if (it.freq === 'weekly') { if (it.kind === 'counter') it.count = round2(it.count + (it.step || 1)); else it.done = true; }
+  else if (it.kind === 'counter') it.counts[i] = round2(it.counts[i] + (it.step || 1));
+  else it.ticks[i] = true;
+  return ` · ${c.name} logged`;
+}
+function testsPageHtml() {
+  const editing = route.testId && state.tests.find((x) => x.id === route.testId);
+  const x = editing || normaliseTest({ date: todayISO(), type: state.lastTestType || 'numerical', provider: state.lastTestProvider || '' });
+  const types = byType();
+  const ev = radarEvidence();
+  const list = [...state.tests].sort((a, b) => b.date.localeCompare(a.date) || 0);
+  const opt = (v, label, cur) => `<option value="${v}" ${v === cur ? 'selected' : ''}>${label}</option>`;
+  const radio = (name, value, label, cur) => `<label><input type="radio" name="${name}" value="${value}" ${cur === value ? 'checked' : ''}><span>${label}</span></label>`;
+  return `
+    <header class="top">${topBar({ label: 'Routine', title: 'Online tests' })}${routineNav('tests')}</header>
+    <form class="card form" data-form="test" data-id="${editing ? x.id : ''}" data-mode="${x.mode}" data-section="Log a test">
+      <div class="card-head"><h2>${editing ? 'Edit result' : 'Log a test'}</h2>${editing ? '<a class="txt-btn" href="#/tests">Cancel</a>' : ''}</div>
+      <datalist id="providers">${TEST_PROVIDERS.map((p) => `<option value="${escapeHtml(p)}">`).join('')}</datalist>
+      <div class="f2"><label class="f">Date<input type="date" name="date" value="${x.date}"></label>
+        <label class="f">Type<select name="type">${Object.entries(TEST_TYPES).map(([v, l]) => opt(v, l, x.type)).join('')}</select></label></div>
+      <div class="f2"><label class="f">Provider<input name="provider" list="providers" value="${escapeHtml(x.provider)}" placeholder="e.g. SHL"></label>
+        <div class="f">For<div class="seg">${radio('mode', 'practice', 'Practice', x.mode)}${radio('mode', 'real', 'Real', x.mode)}</div></div></div>
+      <div class="f2 only-real"><label class="f">Firm<input name="firm" value="${escapeHtml(x.firm)}" placeholder="e.g. Nomura"></label>
+        <label class="f">Outcome<select name="outcome">${opt('', '—', x.outcome)}${opt('pending', 'Waiting', x.outcome)}${opt('pass', 'Passed', x.outcome)}${opt('fail', 'Not passed', x.outcome)}</select></label></div>
+      <div class="f4">
+        <label class="f">Correct<input name="correct" type="number" inputmode="numeric" min="0" step="1" value="${x.correct ?? ''}"></label>
+        <label class="f">Out of<input name="total" type="number" inputmode="numeric" min="0" step="1" value="${x.total ?? ''}"></label>
+        <label class="f">Percentile<input name="pct" type="number" inputmode="numeric" min="0" max="100" step="1" value="${x.pct ?? ''}"></label>
+        <label class="f">Minutes<input name="mins" type="number" inputmode="numeric" min="0" step="1" value="${x.mins ?? ''}"></label>
+      </div>
+      <label class="f">Note<input name="note" value="${escapeHtml(x.note)}" placeholder="What tripped you up, what to practise next"></label>
+      ${editing ? '' : `<label class="f">Also log on routine${routineSelect('routine', state.testRoutine || (routineChoices().find((c) => /test/i.test(c.name)) || {}).id, "Don't")}</label>`}
+      <button class="btn primary" type="submit">${editing ? 'Save' : 'Log result'}</button>
+      ${editing ? '<div class="danger"><button type="button" class="btn warn" data-act="test-delete">Delete result</button></div>' : ''}
+    </form>
+    <section class="card" data-section="How you're doing">
+      <div class="card-head"><h2>How you're doing</h2></div>
+      ${types.length ? types.map(([t, l]) => { const s = testSummary(l); return `<div class="tsum">
+        <div><b>${TEST_TYPES[t]}</b><span>${escapeHtml(summaryLine('', s).replace(/^: /, ''))}${s.mins != null ? ` · ${Math.round(s.mins)} min avg` : ''}</span></div>
+        ${s.metrics.length > 1 ? sparkHtml(s.metrics) : ''}</div>`; }).join('') : '<p class="muted pad small">Log your first test to see averages and trends per type.</p>'}
+    </section>
+    <section class="card" data-section="Capability Radar">
+      <div class="card-head"><h2>Capability Radar evidence</h2></div>
+      ${ev.length ? ev.map((e) => `<div class="rev"><b>${escapeHtml(e.name)}</b>${e.lines.map((l) => `<span>${escapeHtml(l)}</span>`).join('')}</div>`).join('') +
+        `<button class="btn full" data-act="tests-export">Copy for Capability Radar</button>
+        <p class="help center">Paste it into Claude with <b>/capability-radar</b>. Claude proposes score changes from this evidence before saving anything.</p>`
+        : '<p class="muted pad small">Results feed the radar dimensions they test: numerical → finance knowledge, attention to detail and composure under pressure; verbal → writing; logical and situational judgement → judgement.</p>'}
+    </section>
+    ${list.length ? `<section class="card" data-section="History"><div class="card-head"><h2>History</h2><span class="hint">${list.length} logged</span></div>
+      ${list.map((t) => `<a class="crow" href="#/tests/${t.id}"><div class="ctext"><div class="n">${TEST_TYPES[t.type]}${t.provider ? ` · ${escapeHtml(t.provider)}` : ''}${t.mode === 'real' ? ` · <span class="tag">${escapeHtml(t.firm || 'Real')}${t.outcome ? ` ${t.outcome === 'pass' ? '✓' : t.outcome === 'fail' ? '✗' : '…'}` : ''}</span>` : ''}</div>
+        <div class="sub">${fmtShort(t.date)}${t.total ? ` · ${t.correct ?? '?'}/${t.total}` : ''}${t.pct != null ? ` · ${ordinal(t.pct)} pct` : ''}${t.mins != null ? ` · ${t.mins} min` : ''}${t.note ? ` · ${escapeHtml(t.note)}` : ''}</div></div><span class="chev">›</span></a>`).join('')}
+    </section>` : ''}`;
+}
+function saveTestForm(form) {
+  const f = new FormData(form);
+  const fields = Object.fromEntries(['date', 'type', 'provider', 'mode', 'firm', 'correct', 'total', 'pct', 'mins', 'outcome', 'note'].map((k) => [k, f.get(k)]));
+  if (fields.mode !== 'real') { fields.firm = ''; fields.outcome = ''; }
+  const x = normaliseTest({ ...fields, id: form.dataset.id || undefined, provider: String(fields.provider || '').trim(), note: String(fields.note || '').trim() });
+  if (x.correct != null && x.total && x.correct > x.total) { toast('Correct answers can’t be more than the total'); return; }
+  const i = state.tests.findIndex((t) => t.id === x.id);
+  let extra = '';
+  if (i >= 0) state.tests[i] = x;
+  else {
+    state.tests.push(x);
+    const cid = f.get('routine') || '';
+    state.testRoutine = cid || null;
+    if (cid) extra = logOnRoutine(cid, x.date);
+  }
+  state.lastTestType = x.type; state.lastTestProvider = x.provider;
+  save();
+  if (form.dataset.id) location.replace('#/tests'); else render();
+  toast(`${form.dataset.id ? 'Saved' : 'Logged'}${extra}`);
+}
+
+// ---------- Work Buddy ----------
+// The simplest version: one pact with a real person (or a few). Each of you ticks your own day,
+// optionally with a note; the streak grows only on days everyone finished. Your tick can follow a
+// linked routine automatically. Data lives on the server in /api/buddy; membership syncs like the rest.
+const BUDDY_POLL_MS = 2 * 60e3;
+let buddyView = null, buddyError = null, buddyBusy = false, buddyAutoDate = null;
+async function buddyApi(body) {
+  const headers = { 'content-type': 'application/json' };
+  if (state.buddy && state.buddy.token) headers.authorization = `Bearer ${state.buddy.token}`;
+  const r = await fetch('/api/buddy', { method: body ? 'POST' : 'GET', headers, body: body ? JSON.stringify(body) : undefined, cache: 'no-store' });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) { const e = new Error(data.error || `Something went wrong (${r.status}).`); e.status = r.status; throw e; }
+  return data;
+}
+const typing = () => { const a = document.activeElement; return a && $app.contains(a) && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName); };
+async function refreshBuddy() {
+  if (!state.buddy || buddyBusy) return;
+  try { buddyView = (await buddyApi()).pact; buddyError = null; buddyAutoTick(); }
+  catch (e) { buddyError = e.status === 401 || e.status === 404 ? 'gone' : e.message; }
+  if ((route.tab === 'buddy' || route.tab === 'today') && !route.id && !typing()) render();
+}
+function joinedPact(data, form) {
+  state.buddy = { token: data.token, pactId: data.pact.id, commitmentId: new FormData(form).get('routine') || null };
+  buddyView = data.pact; buddyError = null;
+  save();
+  location.hash = '#/buddy';
+  render();
+  buddyAutoTick();
+}
+async function createPact(form) {
+  const f = new FormData(form);
+  try { joinedPact(await buddyApi({ action: 'create', me: f.get('me'), name: f.get('name') }), form); toast('Pact started. Send your buddy the invite link.'); }
+  catch (e) { toast(e.message); }
+}
+async function joinPact(form) {
+  const f = new FormData(form);
+  try { joinedPact(await buddyApi({ action: 'join', invite: f.get('invite'), me: f.get('me') }), form); toast('You’re in!'); }
+  catch (e) { toast(e.message); }
+}
+async function buddyTick(done, note = '') {
+  if (!state.buddy || buddyBusy) return;
+  buddyBusy = true;
+  try { buddyView = (await buddyApi({ action: 'tick', date: todayISO(), done, note })).pact; buddyError = null; }
+  catch (e) { toast(e.message); }
+  buddyBusy = false;
+  if (!typing()) render();
+}
+async function leavePact() {
+  if (!confirm('Leave this pact? Your ticks in it are removed. If you are the last person, the pact is deleted.')) return;
+  try { if (buddyError !== 'gone') await buddyApi({ action: 'leave' }); } catch (e) { if (e.status !== 401 && e.status !== 404) { toast(e.message); return; } }
+  state.buddy = null; buddyView = null; buddyError = null;
+  save(); render();
+}
+// Done today on the linked routine?
+function linkedDoneToday() {
+  const id = state.buddy && state.buddy.commitmentId;
+  const w = id && state.weeks[currentWeekKey()];
+  const it = w && w.items[id];
+  if (!it) return null;
+  return it.freq === 'weekly' || it.freq === 'once' ? periodDone(it) : dayDone(it, todayIndex(currentWeekKey()));
+}
+// Ticks you in the pact when the linked routine is finished (and unticks only what it ticked itself).
+function buddyAutoTick() {
+  if (!buddyView || buddyBusy) return;
+  const done = linkedDoneToday();
+  if (done == null) return;
+  const mine = buddyView.members.find((m) => m.me);
+  const has = !!(mine && mine.days[todayISO()]);
+  if (done && !has) { buddyAutoDate = todayISO(); buddyTick(true, ''); }
+  else if (!done && has && buddyAutoDate === todayISO()) { buddyAutoDate = null; buddyTick(false); }
+}
+function pactStreak(p) {
+  if (p.members.length < 2) return 0;
+  const all = (d) => p.members.every((m) => m.days[d]);
+  let d = todayISO();
+  if (!all(d)) d = addDaysISO(d, -1);
+  let n = 0;
+  while (all(d) && n < 400) { n++; d = addDaysISO(d, -1); }
+  return n;
+}
+const inviteUrl = (p) => `${location.origin}${location.pathname}#/join/${p.invite}`;
+async function shareText(text, url) {
+  if (navigator.share) { try { await navigator.share({ text, url }); return; } catch (e) { if (e.name === 'AbortError') return; } }
+  copyText(`${text} ${url}`);
+}
+function buddyTodayLine() {
+  if (!state.buddy || !buddyView) return '';
+  const others = buddyView.members.filter((m) => !m.me);
+  const s = pactStreak(buddyView);
+  return `<div class="pace"><a href="#/buddy">Work Buddy${s ? ` · 🔥 ${s}` : ''} · ${others.length ? others.map((m) => `${escapeHtml(m.name)} ${m.days[todayISO()] ? '✅' : '⬜'}`).join(' · ') : 'waiting for your buddy'} ›</a></div>`;
+}
+function buddyTabHtml() {
+  const head = (label, title) => `<header class="top">${topBar({ label, title, right: menuBtn })}</header>`;
+  if (!state.buddy) {
+    const invite = route.invite || '';
+    return head('Work Buddy', invite ? 'Join a pact' : 'Partner up') + `
+      <form class="card form" data-form="${invite ? 'buddy-join' : 'buddy-create'}" data-section="${invite ? 'Join' : 'Start a pact'}">
+        <div class="card-head"><h2>${invite ? 'You’ve been invited' : 'Start a pact'}</h2></div>
+        <p class="small muted">${invite ? 'Do the same routine together. Each of you ticks your own day; the streak grows on days you both finish.'
+          : 'Do a routine together with a real person, e.g. an online test every day. Each of you ticks your own day; the streak grows only on days you both finish.'}</p>
+        <label class="f">Your name<input name="me" required maxlength="40" placeholder="What your buddy sees"></label>
+        ${invite ? `<input type="hidden" name="invite" value="${escapeHtml(invite)}">` : '<label class="f">What you’re doing together<input name="name" maxlength="60" value="Daily online test"></label>'}
+        <label class="f">Tick me automatically when I finish<span class="help">Optional. Or tick by hand on this page.</span>${routineSelect('routine', (routineChoices().find((c) => /test/i.test(c.name)) || {}).id, 'Nothing, I’ll tick here')}</label>
+        <button class="btn primary" type="submit">${invite ? 'Join' : 'Start and get an invite link'}</button>
+      </form>
+      ${invite ? '' : `<form class="card form" data-form="buddy-code"><div class="card-head"><h2>Got an invite?</h2></div>
+        <label class="f">Invite link or code<input name="code" placeholder="Paste it here" autocapitalize="off" autocorrect="off"></label>
+        <button class="btn" type="submit">Continue</button></form>`}`;
+  }
+  if (!buddyView) {
+    return head('Work Buddy', 'Pact') + `<section class="card empty">
+      ${buddyError === 'gone' ? '<p>This pact no longer exists or you were removed.</p><button class="btn" data-act="buddy-leave">Start again</button>'
+        : buddyError ? `<p class="err">${escapeHtml(buddyError)}</p><button class="btn" data-act="buddy-refresh">Try again</button>` : '<p class="muted">Loading…</p>'}</section>`;
+  }
+  const p = buddyView, today = todayISO();
+  const me = p.members.find((m) => m.me) || { days: {} };
+  const others = p.members.filter((m) => !m.me);
+  const streak = pactStreak(p);
+  const mineToday = me.days[today];
+  const linked = state.buddy.commitmentId && state.commitments.find((c) => c.id === state.buddy.commitmentId);
+  const waiting = others.filter((m) => !m.days[today]);
+  const timeOf = (d) => (d && d.at ? new Date(d.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '');
+  const days = Array.from({ length: 14 }, (_, i) => addDaysISO(today, i - 13));
+  const row = (m) => `<div class="bgrid-row"><span class="bname">${m.me ? 'You' : escapeHtml(m.name)}</span>${days.map((d) =>
+    `<i class="${m.days[d] ? 'on' : ''} ${d === today ? 'today' : ''}" title="${fmtShort(d)}"></i>`).join('')}</div>`;
+  return head('Work Buddy', escapeHtml(p.name)) + `
+    <section class="card" data-section="Today">
+      <div class="bstreak"><b>${streak ? `🔥 ${streak}` : '🌱 0'}</b><span>${others.length ? `day streak · grows on days you all finish` : 'Waiting for your buddy to join'}</span></div>
+      <div class="bmember me ${mineToday ? 'done' : ''}">
+        <button class="chk ${mineToday ? 'on' : ''}" data-act="buddy-tick" aria-pressed="${!!mineToday}" aria-label="I did it today">${mineToday ? CHECK : ''}</button>
+        <div class="bm-body"><b>You</b><span>${mineToday ? `Done ${timeOf(mineToday)}${mineToday.n ? ` · “${escapeHtml(mineToday.n)}”` : ''}` : 'Not yet today'}</span></div>
+      </div>
+      <form class="inline bnote" data-form="buddy-note"><input name="note" maxlength="140" placeholder="Add a note, e.g. SHL numerical 14/18" value="${escapeHtml(mineToday && mineToday.n || '')}"><button class="mini-btn" type="submit">${mineToday ? 'Save' : 'Done + note'}</button></form>
+      ${others.map((m) => { const d = m.days[today]; return `<div class="bmember ${d ? 'done' : ''}"><span class="chk ring ${d ? 'on' : ''}">${d ? CHECK : ''}</span>
+        <div class="bm-body"><b>${escapeHtml(m.name)}</b><span>${d ? `Done ${timeOf(d)}${d.n ? ` · “${escapeHtml(d.n)}”` : ''}` : 'Not yet today'}</span></div></div>`; }).join('')}
+      ${waiting.length ? `<button class="btn full" data-act="buddy-nudge">Nudge ${escapeHtml(waiting.map((m) => m.name).join(' & '))} 👀</button>` : ''}
+      <p class="help">${linked ? `Ticks you automatically when you finish <b>${escapeHtml(linked.name)}</b>.` : 'Tick by hand, or link a routine below to tick automatically.'}</p>
+    </section>
+    <section class="card" data-section="Last 14 days">
+      <div class="card-head"><h2>Last 14 days</h2></div>
+      <div class="bgrid">${row(me)}${others.map(row).join('')}</div>
+    </section>
+    <section class="card" data-section="Settings">
+      <div class="card-head"><h2>Invite & settings</h2></div>
+      <div class="btn-row"><button class="btn" data-act="buddy-invite">Share invite link</button><button class="btn" data-act="buddy-copy">Copy link</button></div>
+      <form class="form flat" data-form="buddy-routine"><label class="f">Tick me automatically when I finish${routineSelect('routine', state.buddy.commitmentId, 'Nothing, I’ll tick here')}</label></form>
+      <div class="danger"><button class="btn warn" data-act="buddy-leave">Leave pact</button></div>
+    </section>`;
+}
+
 // ---------- Commitment detail page ----------
 function weekKeyFor(c) { return c.freq === 'once' && c.date ? weekOf(c.date) : currentWeekKey(); }
 
@@ -1559,6 +2033,7 @@ function detailPageHtml(id) {
     </header>
     ${stageCard}
     ${progress ? `<section class="card">${progress}</section>` : ''}
+    ${treesForCommitment(id) ? `<section class="card"><div class="card-head"><h2>Knowledge</h2></div>${treesForCommitment(id)}</section>` : ''}
     <section class="card">
       <div class="card-head"><h2>What to do</h2></div>
       ${c.notes ? `<div class="notes">${linkify(c.notes)}</div>` : `<p class="muted small pad">Nothing yet. Tap <a href="#/c/${id}/edit">Edit</a> to add what to do, resource links and your Notion page.</p>`}
@@ -2236,7 +2711,7 @@ const PROGRESS_FIELDS = ['ticks', 'counts', 'mins', 'count', 'done'];
 const FEED_FIELDS = ['id', 'name', 'url', 'section', 'decisions', 'skipped', 'ask', 'allSchedule', 'color'];
 // Calendar colours (the theme's light blue, salmon, gold and light green, plus a few more).
 const CAL_COLORS = ['#add8e6', '#fa8072', '#ffd700', '#90ee90', '#c7b8f5', '#f7a8c8', '#9fe3d6', '#c9c9c9'];
-const RECORD_ORDER = { c: 0, f: 1, ws: 2, wp: 3 };
+const RECORD_ORDER = { c: 0, f: 1, ws: 2, wp: 3, t: 4, x: 5, b: 6 };
 let recordHashes = null; // record key -> JSON of the record as last stamped or received
 let syncTimer = null;
 let syncInFlight = null;
@@ -2271,12 +2746,18 @@ function recordPayloads() {
     }
   }
   for (const f of state.calendars.feeds) out.set(`f:${f.id}`, pick(f, FEED_FIELDS));
+  for (const t of state.trees) out.set(`t:${t.id}`, t);
+  for (const x of state.tests) out.set(`x:${x.id}`, x);
+  if (state.buddy) out.set('b:pact', state.buddy);
   return out;
 }
 function payloadFor(k) {
   const [type, a, b] = splitKey(k);
   if (type === 'c') return state.commitments.find((x) => x.id === a);
   if (type === 'f') { const f = state.calendars.feeds.find((x) => x.id === a); return f && pick(f, FEED_FIELDS); }
+  if (type === 't') return state.trees.find((x) => x.id === a);
+  if (type === 'x') return state.tests.find((x) => x.id === a);
+  if (type === 'b') return state.buddy || undefined;
   const it = state.weeks[a] && state.weeks[a].items[b];
   if (!it) return undefined;
   return type === 'ws' ? omit(it, PROGRESS_FIELDS) : pick(it, PROGRESS_FIELDS);
@@ -2327,6 +2808,15 @@ function applyRecord(k, p) {
     const c = normaliseCommitment(p);
     const i = state.commitments.findIndex((x) => x.id === c.id);
     if (i >= 0) state.commitments[i] = c; else state.commitments.push(c);
+  } else if (type === 't' || type === 'x') {
+    const list = type === 't' ? state.trees : state.tests;
+    const v = type === 't' ? normaliseTree(p) : normaliseTest(p);
+    const i = list.findIndex((x) => x.id === v.id);
+    if (i >= 0) list[i] = v; else list.push(v);
+  } else if (type === 'b') {
+    const had = state.buddy && state.buddy.token;
+    state.buddy = { token: p.token, pactId: p.pactId, commitmentId: p.commitmentId || null };
+    if (had !== p.token) { buddyView = null; setTimeout(refreshBuddy, 0); }
   } else if (type === 'f') {
     const f = state.calendars.feeds.find((x) => x.id === p.id);
     if (f) Object.assign(f, pick(p, FEED_FIELDS));
@@ -2347,6 +2837,9 @@ function removeRecord(k) {
   const [type, a, b] = splitKey(k);
   if (type === 'c') state.commitments = state.commitments.filter((x) => x.id !== a);
   else if (type === 'f') state.calendars.feeds = state.calendars.feeds.filter((x) => x.id !== a);
+  else if (type === 't') state.trees = state.trees.filter((x) => x.id !== a);
+  else if (type === 'x') state.tests = state.tests.filter((x) => x.id !== a);
+  else if (type === 'b') { state.buddy = null; buddyView = null; }
   else if (state.weeks[a]) delete state.weeks[a].items[b];
 }
 
@@ -2808,6 +3301,26 @@ document.addEventListener('click', (e) => {
   const periodItem = () => state.weeks[btn.dataset.wk]?.items[btn.dataset.id];
   switch (act) {
     case 'apps-refresh': refreshApps({ force: true }); break;
+    case 'tree-lit': toggleLeaf(btn.dataset.tree, btn.dataset.node); break;
+    case 'tree-prompt': { const f = btn.closest('form'); copyText(treePrompt(f.name.value.trim(), f.source.value.trim())); break; }
+    case 'tree-delete': {
+      if (!confirm('Delete this knowledge tree?')) break;
+      state.trees = state.trees.filter((t) => t.id !== route.treeId); save(); location.replace('#/knowledge'); break;
+    }
+    case 'test-delete': {
+      if (!confirm('Delete this result?')) break;
+      state.tests = state.tests.filter((t) => t.id !== route.testId); save(); location.replace('#/tests'); break;
+    }
+    case 'tests-export': copyText(radarExport()); break;
+    case 'buddy-tick': { const me = buddyView && buddyView.members.find((m) => m.me); buddyAutoDate = null; buddyTick(!(me && me.days[todayISO()])); break; }
+    case 'buddy-nudge': {
+      const names = buddyView.members.filter((m) => !m.me && !m.days[todayISO()]).map((m) => m.name).join(' & ');
+      shareText(`${names}, haven't seen your ${buddyView.name.toLowerCase()} today 👀 Let's keep the streak going!`, `${location.origin}${location.pathname}#/buddy`); break;
+    }
+    case 'buddy-invite': shareText(`Join my "${buddyView.name}" pact on I Commit! We each tick our own day and keep a streak together.`, inviteUrl(buddyView)); break;
+    case 'buddy-copy': copyText(inviteUrl(buddyView)); break;
+    case 'buddy-leave': leavePact(); break;
+    case 'buddy-refresh': buddyError = null; render(); refreshBuddy(); break;
     case 'apps-more': {
       const k = btn.dataset.key;
       if (appsExpanded.has(k)) appsExpanded.delete(k); else appsExpanded.add(k);
@@ -2953,6 +3466,14 @@ function syncFormVisibility(form) {
   form.dataset.tbc = String(fd.get('tbc') === 'on');
 }
 document.addEventListener('input', (e) => {
+  if (e.target.name === 'outline' && e.target.closest('form[data-form="tree"]')) {
+    treeDraft = e.target.value;
+    const nodes = parseOutline(treeDraft), box = $app.querySelector('.tpreview');
+    if (box) box.innerHTML = nodes.length ? treeNodesHtml({ id: 'preview' }, nodes).replace(/data-act="tree-lit"/g, 'disabled') : '<p class="muted small">Nothing yet.</p>';
+    return;
+  }
+  const tf = e.target.closest('form[data-form="test"]');
+  if (tf && e.target.name === 'mode') { tf.dataset.mode = e.target.value; return; }
   if (e.target.id === 'bgStrength') {
     bg.strength = Number(e.target.value) / 100;
     document.getElementById('bgpic').style.opacity = bg.strength;
@@ -2965,6 +3486,9 @@ document.addEventListener('input', (e) => {
   if (form) syncFormVisibility(form);
 });
 document.addEventListener('change', (e) => {
+  if (e.target.closest('form[data-form="buddy-routine"]') && state.buddy) {
+    state.buddy.commitmentId = e.target.value || null; buddyAutoDate = null; save(); render(); return;
+  }
   if (e.target.id === 'bgFile') {
     const file = e.target.files[0];
     e.target.value = '';
@@ -2993,6 +3517,15 @@ document.addEventListener('submit', (e) => {
   else if (form === 'review') submitReview(e.target);
   else if (form === 'sync-join') joinSync(e.target);
   else if (form === 'followup') saveFollowup(e.target);
+  else if (form === 'tree') saveTreeForm(e.target);
+  else if (form === 'test') saveTestForm(e.target);
+  else if (form === 'buddy-create') createPact(e.target);
+  else if (form === 'buddy-join') joinPact(e.target);
+  else if (form === 'buddy-note') buddyTick(true, String(new FormData(e.target).get('note') || '').trim());
+  else if (form === 'buddy-code') {
+    const m = String(new FormData(e.target).get('code') || '').match(/([a-z0-9]{10})\s*$/i);
+    if (m) location.hash = `#/join/${m[1].toLowerCase()}`; else toast('Paste the whole invite link');
+  }
   else if (form === 'stage-link') {
     const c = state.commitments.find((x) => x.id === e.target.dataset.id);
     const url = cleanUrl(new FormData(e.target).get('url'));
@@ -3017,6 +3550,7 @@ document.addEventListener('visibilitychange', () => {
   if (cur !== lastCurrentKey) { if (viewKey === lastCurrentKey) viewKey = cur; lastCurrentKey = cur; }
   if (!sheetCtx && !route.edit) render();
   syncThenCalendars();
+  refreshBuddy();
   if (swRegistration) swRegistration.update().catch(() => {});
 });
 window.addEventListener('pagehide', flush);
@@ -3057,6 +3591,8 @@ let reloadingForUpdate = false;
   bgRead().then((saved) => { if (saved) { bg = { strength: 0.5, ...saved }; applyBg(); } });
   syncThenCalendars();
   setInterval(() => { if (document.visibilityState === 'visible') syncNow(); }, SYNC_POLL_MS);
+  refreshBuddy();
+  setInterval(() => { if (document.visibilityState === 'visible') refreshBuddy(); }, BUDDY_POLL_MS);
   setInterval(() => { if (document.visibilityState === 'visible') { syncAll({ quiet: true }); refreshApps(); } }, 5 * 60e3);
   scheduleWidgetPush(1000);
   navigator.storage?.persist?.();

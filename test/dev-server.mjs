@@ -7,11 +7,13 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { handle as syncHandle } from '../server/sync.mjs';
 import { handle as widgetHandle } from '../server/widget.mjs';
+import { handle as buddyHandle } from '../server/buddy.mjs';
 import { memoryStore } from './sync-fn-store.mjs';
 
 const root = path.resolve(path.dirname(decodeURIComponent(new URL(import.meta.url).pathname)), '..');
 const port = Number(process.argv[2]) || 8766;
 const syncStore = memoryStore();
+const buddyStore = memoryStore();
 const widgetMem = new Map();
 const widgetStore = { get: async (k) => widgetMem.get(k) ?? null, set: async (k, v) => { widgetMem.set(k, v); }, delete: async (k) => { widgetMem.delete(k); } };
 const TYPES = { '.html': 'text/html', '.js': 'text/javascript', '.mjs': 'text/javascript', '.css': 'text/css', '.json': 'application/json', '.webmanifest': 'application/manifest+json', '.png': 'image/png', '.ics': 'text/calendar' };
@@ -29,6 +31,7 @@ http.createServer(async (req, res) => {
     let response;
     if (url.pathname === '/api/sync') response = await syncHandle(await toRequest(req), syncStore);
     else if (url.pathname === '/api/widget') response = await widgetHandle(await toRequest(req), widgetStore);
+    else if (url.pathname === '/api/buddy') response = await buddyHandle(await toRequest(req), buddyStore);
     if (response) {
       res.writeHead(response.status, Object.fromEntries(response.headers));
       res.end(Buffer.from(await response.arrayBuffer()));
