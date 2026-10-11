@@ -677,12 +677,29 @@ body.has-bg .card, body.has-bg .tabbar, body.has-bg .sidenav, body.has-bg .banne
 .seg4 label span { font-size: 13.5px; padding-left: 2px; padding-right: 2px; }
 .steps { margin: 4px 0 8px; padding-left: 22px; line-height: 1.5; }
 .steps li { margin: 4px 0; }
-.card[data-section="This day"] .dpills { padding: 2px 2px 4px; }
-/* Phones: the day card above carries the routine brackets and one-offs, so the grid only shows the schedule. */
-.call .dpills { display: none; }
-@media (min-width: 700px) { .call .dpills { display: flex; } }
-@media (max-width: 699px) { .call .cuntimed:not(.sched) { display: none; } }
 button.chead { border: 0; background: none; font: inherit; color: inherit; cursor: pointer; padding: 2px 0 6px; border-radius: 8px; }
 button.chead.sel b { color: var(--accent); text-decoration: underline; text-underline-offset: 3px; }
 /* Six tabs on the phone tab bar */
 .tabbar a span { font-size: 10.5px; }
+
+/* ---------- Calendar: My plan (routines, own one-offs, applications) ---------- */
+.pgrid-head, .pcols { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 0 6px; }
+.pcol { display: flex; flex-direction: column; gap: 6px; padding: 4px 0 6px; min-width: 0; border-radius: 10px; }
+.pcol.today { background: color-mix(in srgb, var(--today) 55%, transparent); }
+.pcol > p { margin: 6px 4px; }
+.dpill.once { border-color: #e6b800; background: rgba(255, 215, 0, 0.16); }
+.dpill.once.done { border-color: var(--accent); background: rgba(144, 238, 144, 0.35); }
+.dpill.once.missed { border-color: var(--line); background: transparent; }
+.dpill a.dname { color: inherit; text-decoration: none; }
+button.dbox { padding: 0; cursor: pointer; color: var(--fill-ink); }
+.dpill .dtime { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.papps { display: flex; flex-direction: column; gap: 4px; }
+.cuntimed { background: color-mix(in srgb, var(--ev, #add8e6) 35%, var(--card)); }
+.phone-only { display: none; }
+@media (max-width: 699px) {
+  .pgrid-head { display: none; }
+  .pcols { grid-template-columns: 1fr; }
+  .pcol:not(.sel) { display: none; }
+  .pcol.today { background: none; }
+  .phone-only { display: inline; }
+}

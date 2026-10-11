@@ -17,7 +17,7 @@ const DEFAULT_COMMITMENTS = [
 ]
 const DAY_NAMES = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 const FREQS = ['daily', 'weekly', 'periodic', 'once'];
-const FREQ_LABEL = { daily: 'Daily', weekly: 'Weekly', periodic: 'Periodically', once: 'One-off' };
+const FREQ_LABEL = { daily: 'Daily', weekly: 'Weekly', periodic: 'Periodic', once: 'One-off' };
 const LONG_PRESS_MS = 450;
 
 // ---------- Dates ----------
@@ -756,7 +756,7 @@ function todayTabHtml() {
   const routine = [
     sub('Daily', daily || '<p class="muted pad small">No daily routines yet. <a href="#/new/daily">Add one</a></p>', '<span class="hint">Tap to log · hold for minutes</span>'),
     sub('Weekly', weekly.length ? weekly.map(([id, it]) => periodRowHtml(wk, id, it)).join('') : '<p class="muted pad small">No weekly routines yet. <a href="#/new/weekly">Add one</a></p>'),
-    sub('Periodically',
+    sub('Periodic',
       (dueNow.map(([id, it]) => todayDailyRow(wk, ti, id, it, `${fmtPlan(it)} · every ${everyLabel(it.everyDays || 7)} · ${periodicSub(id, it)}`)).join('') ||
         (periodic.length ? '<p class="muted pad small">Nothing due today.</p>' : '<p class="muted pad small">Things you do every few days or weeks, e.g. laundry. <a href="#/new/periodic">Add one</a></p>')) +
       (notDue.length ? `<div class="later">${notDue.map(([id, it]) => `<a href="#/c/${id}">${escapeHtml(it.name)} <small>${periodicSub(id, it)}</small></a>`).join('')}</div>` : '')),
@@ -861,7 +861,7 @@ function weekTabHtml() {
       ${[...groupBySection(weekly)].map(([s, es]) => `<div class="sec">${escapeHtml(s)}</div>` +
         es.map(([id, it]) => periodRowHtml(viewKey, id, it)).join('')).join('')}</section>` : '') +
     (pgrid ? `<section class="card daily">
-      <div class="card-head"><h2>Periodically</h2><span class="hint">Tick the day you did it</span></div>
+      <div class="card-head"><h2>Periodic</h2><span class="hint">Tick the day you did it</span></div>
       ${dayHeadHtml(viewKey)}${pgrid}
     </section>` : '');
 }
@@ -918,10 +918,43 @@ function calendarTabHtml() {
   const w = getWeek(wk);
   const today = todayISO();
   const days = DAY_NAMES.map((_, i) => isoDate(dayDate(wk, i)));
+  const synced = new Set(state.commitments.filter((c) => c.source).map((c) => c.id));
   const once = w ? itemsOf(w, 'once') : [];
+  const mine = once.filter(([id, it]) => !synced.has(id) && !it.schedule);   // your own one-offs
+  const fromCal = once.filter(([id, it]) => synced.has(id) || it.schedule);  // synced calendars
+
+  // --- 1. My plan: routines, your own one-offs and application dates, day by day.
+  const appsByDay = {};
+  for (const e of appEvents()) (appsByDay[e.date] = appsByDay[e.date] || []).push(e);
+  const routineOf = (d) => !w ? [] : [...itemsOf(w, 'daily'),
+    ...itemsOf(w, 'periodic').filter(([id, it]) => periodicOn(id, it, d))];
+  const pillState = (done, d) => (done ? 'done' : d < today ? 'missed' : 'pending');
+  const planCol = (d, i) => {
+    const routine = routineOf(d).map(([id, it]) => {
+      const done = dayDone(it, i);
+      const prog = it.kind === 'counter' ? `<small>${round2(it.counts[i])}/${round2(it.target)}</small>` : it.freq === 'periodic' ? '<small>↻</small>' : '';
+      return `<button class="dpill ${pillState(done, d)}" data-cell="${wk}:${id}:${i}" aria-label="${escapeHtml(cellLabel(it, i))}">
+        <span class="dbox">${done ? CHECK : ''}</span><span class="dname">${escapeHtml(it.name)}</span>${prog}</button>`;
+    }).join('');
+    const ones = mine.filter(([, it]) => it.date === d).map(([id, it]) => {
+      const done = periodDone(it);
+      return `<div class="dpill once ${pillState(done, d)}">
+        <button class="dbox" data-act="pdone" data-wk="${wk}" data-id="${id}" aria-label="${escapeHtml(it.name)} done" aria-pressed="${done}">${done ? CHECK : ''}</button>
+        <a class="dname" href="#/c/${id}">${it.time ? `<small class="dtime">${escapeHtml(it.time)}</small> ` : ''}${escapeHtml(it.name)}</a></div>`;
+    }).join('');
+    const apps = (appsByDay[d] || []).map((e) => `<a class="chip-app k-${e.kind}" href="#/apps/${d}" title="${escapeHtml(`${e.a.company} ${APP_EVENT_LABEL[e.kind]}`)}">${escapeHtml(e.a.company)} ${e.kind === 'open' ? 'opens' : e.kind === 'close' ? 'closes' : 'due'}</a>`).join('');
+    const body = routine + ones + apps;
+    return `<div class="pcol ${d === calViewDay ? 'sel' : ''} ${d === today ? 'today' : ''}">
+      ${routine ? `<div class="dpills">${routine}</div>` : ''}
+      ${ones ? `<div class="dpills">${ones}</div>` : ''}
+      ${apps ? `<div class="papps">${apps}</div>` : ''}
+      ${body ? '' : '<p class="muted small">Nothing planned.</p>'}</div>`;
+  };
+
+  // --- 2. Synced calendars: a time grid of events imported from your calendars.
   const timed = {}, untimed = {};
   for (const d of days) { timed[d] = []; untimed[d] = []; }
-  for (const [id, it] of once) {
+  for (const [id, it] of fromCal) {
     if (!timed[it.date]) continue;
     if (it.time) {
       const start = toMinutes(it.time);
@@ -941,41 +974,12 @@ function calendarTabHtml() {
   const nowMin = now.getHours() * 60 + now.getMinutes();
 
   const strip = days.map((d, i) => {
-    const n = timed[d].length + untimed[d].length;
+    const n = timed[d].length + untimed[d].length + mine.filter(([, it]) => it.date === d).length;
     return `<button class="cday ${d === calViewDay ? 'sel' : ''} ${d === today ? 'today' : ''}" data-act="cal-day" data-date="${d}">
       <span>${DAY_NAMES[i][0]}</span><b>${parseISO(d).getDate()}</b><i class="${n ? 'dot' : ''}"></i></button>`;
   }).join('');
 
-  // Daily commitments as tick-able brackets: highlighted until done, faded and crossed out once
-  // the day has passed without them.
-  // Periodic routines show on the day they are due (or were done).
-  const routineOf = (d, i) => !w ? [] : [...itemsOf(w, 'daily'),
-    ...itemsOf(w, 'periodic').filter(([id, it]) => periodicOn(id, it, d))];
-  const dailyChip = (d, i) => {
-    const list = routineOf(d, i);
-    if (!list.length) return '';
-    return `<div class="dpills">${list.map(([id, it]) => {
-      const done = dayDone(it, i);
-      const st = done ? 'done' : d < today ? 'missed' : 'pending';
-      const prog = it.kind === 'counter' ? `<small>${round2(it.counts[i])}/${round2(it.target)}</small>` : it.freq === 'periodic' ? '<small>↻</small>' : '';
-      return `<button class="dpill ${st}" data-cell="${wk}:${id}:${i}" aria-label="${escapeHtml(cellLabel(it, i))}">
-        <span class="dbox">${done ? CHECK : ''}</span><span class="dname">${escapeHtml(it.name)}</span>${prog}</button>`;
-    }).join('')}</div>`;
-  };
-  // The selected day's to-dos: routine brackets, then that day's one-off tasks.
-  const si = days.indexOf(calViewDay);
-  const dayOnce = once.filter(isTask).filter(([, it]) => it.date === calViewDay);
-  const dayTitle = calViewDay === today ? 'Today' : fmtDay(parseISO(calViewDay), { weekday: 'long', day: 'numeric', month: 'short' });
-  const dayCard = si < 0 ? '' : `
-    <section class="card" data-section="This day">
-      <div class="card-head"><h2>${dayTitle}</h2><span class="hint">${calViewDay === today ? fmtShort(today) : ''}</span></div>
-      <div class="subhead"><h3>Routine</h3></div>
-      ${dailyChip(calViewDay, si) || '<p class="muted pad small">No routines this day.</p>'}
-      <div class="subhead"><h3>Today only</h3></div>
-      ${dayOnce.length ? dayOnce.map(([id, it]) => periodRowHtml(wk, id, it)).join('') : '<p class="muted pad small">No one-off tasks this day.</p>'}
-    </section>`;
-
-  const cols = days.map((d, i) => {
+  const cols = days.map((d) => {
     const evs = layoutDay(timed[d]).map((e) => {
       const sched = !!e.it.schedule;
       const done = !sched && periodDone(e.it);
@@ -994,19 +998,16 @@ function calendarTabHtml() {
     return `<div class="ccol ${d === calViewDay ? 'sel' : ''} ${d === today ? 'today' : ''}" style="height:${gridH}px">${evs}${nowLine}</div>`;
   }).join('');
 
-  const appsByDay = {};
-  for (const e of appEvents()) (appsByDay[e.date] = appsByDay[e.date] || []).push(e);
-  const allDay = days.map((d, i) => `<div class="call ${d === calViewDay ? 'sel' : ''}">
-      ${dailyChip(d, i)}
-      ${(appsByDay[d] || []).map((e) => `<a class="chip-app k-${e.kind}" href="#/apps/${d}" title="${escapeHtml(`${e.a.company} ${APP_EVENT_LABEL[e.kind]}`)}">${escapeHtml(e.a.company)} ${e.kind === 'open' ? 'opens' : e.kind === 'close' ? 'closes' : 'due'}</a>`).join('')}
-      ${untimed[d].map(([id, it]) => { const sched = !!it.schedule; const done = !sched && periodDone(it); return `<div class="cuntimed ${sched ? 'sched' : ''} ${done ? 'done' : ''}" data-open="#/c/${id}">
+  const hasAllDay = days.some((d) => untimed[d].length);
+  const allDay = days.map((d) => `<div class="call ${d === calViewDay ? 'sel' : ''}">
+      ${untimed[d].map(([id, it]) => { const sched = !!it.schedule; const done = !sched && periodDone(it); return `<div class="cuntimed ${sched ? 'sched' : ''} ${done ? 'done' : ''}" data-open="#/c/${id}" style="--ev:${eventColor(id)}">
         ${sched ? '' : `<button class="cev-chk" data-act="pdone" data-wk="${wk}" data-id="${id}" aria-label="${escapeHtml(it.name)} done">${done ? CHECK : ''}</button>`}
         <span>${escapeHtml(it.name)}</span></div>`; }).join('')}
     </div>`).join('');
 
-  const heads = days.map((d, i) => `<button class="chead ${d === today ? 'today' : ''} ${d === calViewDay ? 'sel' : ''}" data-act="cal-day" data-date="${d}"><span>${DAY_NAMES[i]}</span><b>${parseISO(d).getDate()}</b></button>`).join('');
+  const heads = (cls) => days.map((d, i) => `<button class="chead ${cls} ${d === today ? 'today' : ''} ${d === calViewDay ? 'sel' : ''}" data-act="cal-day" data-date="${d}"><span>${DAY_NAMES[i]}</span><b>${parseISO(d).getDate()}</b></button>`).join('');
   const isThisWeek = wk === currentWeekKey();
-  const nothing = !all.length && !days.some((d) => untimed[d].length);
+  const dayName = calViewDay === today ? 'Today' : fmtShort(calViewDay);
 
   return `
     <header class="top">
@@ -1019,16 +1020,21 @@ function calendarTabHtml() {
       })}
       <div class="cstrip">${strip}</div>
     </header>
-    ${dayCard}
-    <section class="card cal" data-section="Schedule">
-      <div class="card-head"><h2>Schedule</h2><a class="txt-btn" href="#/calendar">Calendars ›</a></div>
-      <div class="cgrid-head"><div class="ctimes-gap"></div>${heads}</div>
-      <div class="call-row"><div class="ctimes-gap small muted">all day</div>${allDay}</div>
+    <section class="card cal" data-section="My plan">
+      <div class="card-head"><h2>My plan</h2><span class="hint"><span class="phone-only">${dayName} · </span>routines, your own tasks, applications</span></div>
+      <div class="pgrid-head">${heads('')}</div>
+      <div class="pcols">${days.map(planCol).join('')}</div>
+    </section>
+    <section class="card cal" data-section="Synced calendars">
+      <div class="card-head"><h2>Synced calendars</h2><a class="txt-btn" href="#/calendar">Calendars ›</a></div>
+      <div class="cgrid-head"><div class="ctimes-gap"></div>${heads('')}</div>
+      ${hasAllDay ? `<div class="call-row"><div class="ctimes-gap small muted">all day</div>${allDay}</div>` : ''}
       <div class="cgrid">
         <div class="ctimes">${hours.map((h) => `<div style="height:${HOUR_PX}px">${pad(h)}:00</div>`).join('')}</div>
         <div class="ccols" style="height:${gridH}px;background-size:100% ${HOUR_PX}px">${cols}</div>
       </div>
-      ${nothing ? `<p class="muted small pad center">No events this week. Connect a calendar in <a href="#/calendar">All commitments → Calendars</a>, or add a one-off with a time.</p>` : ''}
+      ${state.calendars.feeds.length ? (all.length || hasAllDay ? '' : '<p class="muted small pad center">No calendar events this week.</p>')
+        : `<p class="muted small pad center">No calendar connected yet. Add one in <a href="#/calendar">All commitments → Calendars</a>.</p>`}
     </section>`;
 }
 
@@ -1440,7 +1446,7 @@ function commitmentsTabHtml() {
     ${reviewBannerHtml()}
     ${block('daily', 'Daily', sortedCommitments('daily'))}
     ${block('weekly', 'Weekly', sortedCommitments('weekly'))}
-    ${block('periodic', 'Periodically', sortedCommitments('periodic'))}
+    ${block('periodic', 'Periodic', sortedCommitments('periodic'))}
     ${block('once', 'One-off', upcoming)}
     ${applicationsCardHtml()}
     ${calendarsCardHtml()}
